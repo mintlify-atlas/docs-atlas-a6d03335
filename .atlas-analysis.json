@@ -1,0 +1,104 @@
+{
+  "projectType": "saas",
+  "projectName": "Steam Deals AI",
+  "projectDescription": "A Telegram bot that delivers daily curated Steam game deals using a two-layer hybrid filter: deterministic rules first, then GPT-4o-mini for intelligent curation.",
+  "theme": "palm",
+  "primaryColor": "#1b2838",
+  "lightColor": "#c7d5e0",
+  "darkColor": "#0e1822",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/filter-pipeline",
+              "concepts/ai-curation",
+              "concepts/caching"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/filter-tuning",
+              "configuration/scheduler"
+            ]
+          },
+          {
+            "group": "Bot Commands",
+            "pages": [
+              "commands/overview"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/self-hosting",
+              "deployment/running"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Modules",
+            "pages": [
+              "reference/deals-service",
+              "reference/rules-filter",
+              "reference/openai-filter",
+              "reference/notifier",
+              "reference/scheduler",
+              "reference/cache"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "reference/cheapshark-api",
+              "reference/telegram-api",
+              "reference/openai-api"
+            ]
+          },
+          {
+            "group": "Types",
+            "pages": [
+              "reference/types"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Two-layer hybrid filtering: deterministic rules (Metacritic, Steam rating, price, discount) followed by GPT-4o-mini AI curation",
+    "Daily automated broadcasts via Telegram cron scheduler (configurable, defaults to 9am Bogotá time)",
+    "Smart snapshot caching: skips GPT calls when candidate list hasn't changed, reducing API costs",
+    "Deduplication system prevents the same games from being notified within a configurable window",
+    "AI fallback to last valid daily snapshot if OpenAI is unavailable",
+    "Rate limiting on /deals command (45s cooldown per chat) to prevent abuse",
+    "Four Telegram bot commands: /start, /deals, /stop, /help",
+    "Configurable filter thresholds via environment variables (no code changes needed)"
+  ],
+  "publicApiSurface": [
+    "fetchDeals() — query-only pipeline; serves from snapshot if fresh",
+    "fetchAndMarkDeals() — pipeline + marks results as notified (used by cron)",
+    "applyHardFilters(deals, options, notifiedIds) — pure deterministic filter layer 1",
+    "filterDealsWithAI(deals) — GPT-4o-mini curation layer 2",
+    "buildFilteredDeals(candidates, selection) — reconstruct FilteredDeal[] from AI selection",
+    "notifyAllUsers(message) — broadcast HTML message to all subscribers",
+    "saveChatId(chatId) / removeChatId(chatId) — subscriber management",
+    "startScheduler() — start the daily cron job",
+    "registerCommands(bot) — register all Telegram bot commands",
+    "Bot commands: /start, /deals, /stop, /help"
+  ]
+}
