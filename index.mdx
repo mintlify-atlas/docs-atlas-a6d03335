@@ -1,97 +1,85 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Steam Deals AI"
+description: "A Telegram bot that delivers daily curated Steam game deals using a two-layer hybrid filter: deterministic rules first, then GPT-4o-mini for intelligent curation."
 ---
 
-## Setting up
-
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Set up your bot and receive your first curated deals in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="How it works" icon="diagram-project" href="/concepts/architecture">
+    Understand the two-layer filter pipeline that powers Steam Deals AI.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Configuration" icon="sliders" href="/configuration/environment-variables">
+    Tune filter thresholds, scheduler times, and API settings.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Bot Commands" icon="terminal" href="/commands/overview">
+    Reference for all Telegram commands your subscribers can use.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is Steam Deals AI?
 
-Everything you need to create world-class documentation.
+Steam Deals AI is a self-hosted Telegram bot that monitors Steam for discounted games and delivers a daily curated selection directly to your subscribers. Instead of flooding users with every sale, it applies a **two-layer hybrid filter** to surface only the games that genuinely matter:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+1. **Layer 1 — Deterministic rules**: Every deal is checked against configurable thresholds for discount percentage, Metacritic score, Steam rating, and maximum price. Deals that don't clear the bar are rejected instantly, with no API cost.
 
-## Need inspiration?
+2. **Layer 2 — AI curation (GPT-4o-mini)**: Candidates that pass the rules filter are sent to GPT-4o-mini, which selects up to 10 games with recognized community standing — AAA titles, celebrated indies, franchise entries, and viral hits. The AI adds a short reason for each pick.
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Note>
+  The AI is never the sole judge. Rules guarantee a quality floor; the AI only decides among candidates that already meet objective criteria.
+</Note>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Smart caching" icon="database">
+    Snapshot caching skips GPT calls when the candidate list hasn't changed, minimizing OpenAI costs.
+  </Card>
+  <Card title="Deduplication" icon="copy">
+    Games already notified recently are excluded automatically for a configurable number of days.
+  </Card>
+  <Card title="Daily broadcasts" icon="bell">
+    A cron scheduler sends curated deals to all subscribers every morning at a configurable time.
+  </Card>
+  <Card title="AI fallback" icon="shield">
+    If OpenAI is unavailable, the bot falls back to the last valid daily snapshot instead of sending an error.
+  </Card>
+  <Card title="Rate limiting" icon="gauge">
+    The `/deals` command enforces a per-chat cooldown to prevent abuse.
+  </Card>
+  <Card title="Fully configurable" icon="gear">
+    All filter thresholds, schedule, and model settings are controlled via environment variables.
+  </Card>
+</CardGroup>
+
+## How the pipeline works
+
+```
+CheapShark API  →  Rules Filter (Layer 1)  →  GPT-4o-mini (Layer 2)  →  Telegram Broadcast
+```
+
+The bot fetches up to 60 Steam deals from CheapShark, applies hard filters (discount ≥ 50%, price ≤ $60, Metacritic ≥ 70 OR Steam rating ≥ 70%), then passes candidates to GPT-4o-mini for the final curation. Results are cached as a daily snapshot so repeated `/deals` requests within the same day are served instantly.
+
+<Tip>
+  On a typical day, only **one GPT call** is made — the rest is served from cache. If candidates don't change between days, even that call is skipped.
+</Tip>
+
+## Get started
+
+<Steps>
+  <Step title="Create a Telegram bot">
+    Talk to [@BotFather](https://t.me/BotFather) on Telegram to create a new bot and obtain your `BOT_TOKEN`.
+  </Step>
+  <Step title="Get an OpenAI API key">
+    Sign up at [platform.openai.com](https://platform.openai.com) and create an API key for GPT-4o-mini access.
+  </Step>
+  <Step title="Clone and configure">
+    Clone the repository, copy `.env.example` to `.env`, and fill in your credentials and filter preferences.
+  </Step>
+  <Step title="Run the bot">
+    Install dependencies with `npm install` and start with `npm run dev` (development) or `npm start` (production).
+  </Step>
+</Steps>
+
+Ready to go deeper? Read the full [quickstart guide](/quickstart).

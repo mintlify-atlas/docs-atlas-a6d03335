@@ -1,0 +1,104 @@
+---
+title: "Self-hosting"
+description: "How to run the Steam Deals AI bot on your own server."
+---
+
+## Prerequisites
+
+Before you begin, make sure you have the following:
+
+- **Node.js >= 20** — the bot uses native `structuredClone` and other modern APIs.
+- **A Telegram bot token** — create a bot via [@BotFather](https://t.me/BotFather) and copy the token.
+- **An OpenAI API key** — required for GPT-4o-mini curation. Get one at [platform.openai.com](https://platform.openai.com).
+
+## Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/sebasgc0399/steam-deals-ai.git
+    cd steam-deals-ai
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+  </Step>
+
+  <Step title="Create your .env file">
+    Copy the provided template:
+
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+
+  <Step title="Edit .env with your credentials">
+    Open `.env` and set the two required variables at minimum:
+
+    ```bash
+    BOT_TOKEN=123456789:AbCdefGhIJKlmNoPQRsTUVwxyZ
+    OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxx
+    ```
+
+    All other variables have sensible defaults and are optional. See the full list below.
+  </Step>
+
+  <Step title="Build TypeScript">
+    ```bash
+    npm run build
+    ```
+
+    This compiles the source to the `dist/` directory.
+  </Step>
+
+  <Step title="Start the bot">
+    ```bash
+    npm start
+    ```
+
+    You should see: `🚀 Steam Deals Bot iniciado correctamente`
+  </Step>
+</Steps>
+
+## Environment variables
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
+| `OPENAI_API_KEY` | Yes | — | OpenAI API key |
+| `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model used for curation |
+| `MIN_DISCOUNT_PERCENT` | No | `50` | Minimum discount required (%) |
+| `MIN_METACRITIC_SCORE` | No | `70` | Minimum Metacritic score (0 to disable) |
+| `MIN_STEAM_RATING_PERCENT` | No | `70` | Minimum Steam user rating (%) |
+| `MAX_PRICE_USD` | No | `60` | Maximum sale price in USD |
+| `DEALS_PAGE_SIZE` | No | `60` | Number of deals to fetch from CheapShark (max 60) |
+| `DEDUP_DAYS` | No | `7` | Days before a game can appear again |
+| `CRON_SCHEDULE` | No | `0 9 * * *` | Cron expression for daily broadcast (9 AM Colombia time) |
+
+## The `data/` directory
+
+The bot creates a `data/` directory at runtime to persist state between restarts. It contains three files:
+
+| File | Purpose |
+| ---- | ------- |
+| `chat_ids.json` | Subscriber `chat_id` list used for daily broadcasts |
+| `notified_games.json` | Deduplication records — prevents repeating the same game within `DEDUP_DAYS` days |
+| `snapshot.json` | Today's curated deals — served instantly by `/deals` if already generated |
+
+<Warning>
+  Do not add `data/` to `.gitignore` if you want subscribers and deduplication history to survive redeployments. Losing `data/chat_ids.json` means all users must re-run `/start` to resubscribe.
+</Warning>
+
+<Tip>
+  For production use, run the bot under a process manager such as [PM2](https://pm2.keymetrics.io/) to automatically restart on crash and survive server reboots:
+
+  ```bash
+  npm install -g pm2
+  pm2 start dist/bot/index.js --name steam-deals-bot
+  pm2 save
+  pm2 startup
+  ```
+</Tip>

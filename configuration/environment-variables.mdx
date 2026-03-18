@@ -1,0 +1,119 @@
+---
+title: "Environment variables"
+description: "Complete reference for all environment variables used to configure the Steam Deals bot."
+---
+
+## .env.example
+
+Copy this file to `.env` in the project root and fill in your values:
+
+```bash
+# Telegram Bot Token (obtenido de @BotFather en Telegram)
+BOT_TOKEN=123456789:AbCdefGhIJKlmNoPQRsTUVwxyZ
+
+# OpenAI API Key (plataforma OpenAI)
+OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxx
+
+# Modelo a usar (gpt-4o-mini es el más económico y suficiente)
+OPENAI_MODEL=gpt-4o-mini
+
+# ─── Filtros CAPA 1 (deterministas, sin costo) ─────────────
+MIN_DISCOUNT_PERCENT=50        # Descuento mínimo requerido (%)
+MIN_METACRITIC_SCORE=70        # Score mínimo de Metacritic (0 = ignorar)
+MIN_STEAM_RATING_PERCENT=70    # Steam rating % mínimo
+MAX_PRICE_USD=60               # Precio máximo tras descuento
+DEALS_PAGE_SIZE=60             # Cuántos deals traer de CheapShark (máx 60)
+
+# ─── Deduplicación ─────────────────────────────────────────
+DEDUP_DAYS=7                   # No repetir un juego por N días
+
+# ─── Scheduler ─────────────────────────────────────────────
+# Formato cron estándar. Ver https://crontab.guru
+CRON_SCHEDULE=0 9 * * *        # Todos los días a las 9:00am (Colombia UTC-5)
+```
+
+<Warning>
+`BOT_TOKEN` and `OPENAI_API_KEY` are **required**. The bot will throw an error immediately at startup if either variable is missing or empty.
+</Warning>
+
+## Variable reference
+
+### Required
+
+<ParamField path="BOT_TOKEN" type="string" required>
+  Telegram bot token issued by [@BotFather](https://t.me/BotFather). Create a new bot with the `/newbot` command to obtain one.
+</ParamField>
+
+<ParamField path="OPENAI_API_KEY" type="string" required>
+  OpenAI API key used to call the GPT model for the AI curation layer. Obtain one from the [OpenAI platform](https://platform.openai.com/api-keys).
+</ParamField>
+
+### OpenAI
+
+<ParamField path="OPENAI_MODEL" type="string">
+  OpenAI model used for deal curation. Must be a valid model name accessible with your API key.
+
+  **Default:** `gpt-4o-mini`
+</ParamField>
+
+### Layer 1 filters
+
+<ParamField path="MIN_DISCOUNT_PERCENT" type="integer">
+  Minimum discount percentage a deal must have to pass the deterministic filter. Accepted range: `0`–`100`.
+
+  **Default:** `50`
+</ParamField>
+
+<ParamField path="MIN_METACRITIC_SCORE" type="integer">
+  Minimum Metacritic score required for a game to pass the quality check. Set to `0` to disable the Metacritic check entirely and rely solely on the Steam rating. Accepted range: `0`–`100`.
+
+  **Default:** `70`
+</ParamField>
+
+<ParamField path="MIN_STEAM_RATING_PERCENT" type="integer">
+  Minimum Steam community rating percentage required. A game passes the quality check if it meets **either** this threshold **or** the Metacritic threshold. Accepted range: `0`–`100`.
+
+  **Default:** `70`
+</ParamField>
+
+<ParamField path="MAX_PRICE_USD" type="integer">
+  Maximum sale price in USD after the discount is applied. Deals priced above this value are excluded. Accepted range: `1`–`999`.
+
+  **Default:** `60`
+</ParamField>
+
+<ParamField path="DEALS_PAGE_SIZE" type="integer">
+  Number of deals to fetch from the CheapShark API per run. A larger value gives the AI more candidates to evaluate. The CheapShark API caps this at `60`. Accepted range: `1`–`60`.
+
+  **Default:** `60`
+</ParamField>
+
+### Deduplication
+
+<ParamField path="DEDUP_DAYS" type="integer">
+  Number of days to suppress repeat notifications for the same game. A game that was already broadcast will be excluded from subsequent runs for this many days. Accepted range: `1`–`365`.
+
+  **Default:** `7`
+</ParamField>
+
+### Scheduler
+
+<ParamField path="CRON_SCHEDULE" type="string">
+  Cron expression that controls when the daily deal broadcast runs. The schedule is evaluated in the **America/Bogota (UTC-5)** timezone. See the [Scheduler](/configuration/scheduler) page for examples.
+
+  **Default:** `0 9 * * *` (every day at 9:00 AM Bogotá time)
+</ParamField>
+
+<Note>
+  `CRON_SCHEDULE` is validated as a syntactically valid cron expression at startup using `node-cron`. If the value is invalid, the bot will throw an error and refuse to start.
+</Note>
+
+## Startup validation
+
+`src/config.ts` validates all values when the process starts:
+
+- **`required()`** — throws if the variable is missing or empty.
+- **`optionalInt()`** — parses the value as an integer and throws if it is not a number or falls outside the declared `[min, max]` range.
+- **`validatedCron()`** — passes the expression through `node-cron.validate()` and throws on an invalid cron string.
+
+Any validation failure exits the process before the bot connects to Telegram or OpenAI, so misconfiguration is caught immediately.

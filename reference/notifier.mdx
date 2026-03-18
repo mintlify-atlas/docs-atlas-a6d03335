@@ -1,0 +1,115 @@
+---
+title: "Telegram notifier"
+description: "Manages subscriber chat IDs and broadcasts HTML-formatted deal messages to all subscribers via the Telegram Bot API."
+---
+
+## Overview
+
+`src/notifier/telegramNotifier.ts` handles all subscriber management and message delivery. Chat IDs are persisted to `data/chat_ids.json` using atomic writes. The broadcast loop applies rate limiting and per-message timeouts, and automatically removes chat IDs that return permanent errors.
+
+## Exported functions
+
+### `saveChatId`
+
+```typescript
+export function saveChatId(chatId: number): void
+```
+
+Adds a chat ID to `data/chat_ids.json` if it is not already present. Called when a user sends `/start` to the bot. Creates the `data/` directory if it does not exist.
+
+<ParamField path="chatId" type="number" required>
+  The Telegram chat ID of the subscriber to add.
+</ParamField>
+
+### `loadChatIds`
+
+```typescript
+export function loadChatIds(): number[]
+```
+
+Reads and returns the full list of subscriber chat IDs from `data/chat_ids.json`. Returns an empty array if the file does not exist or cannot be parsed.
+
+### `removeChatId`
+
+```typescript
+export function removeChatId(chatId: number): void
+```
+
+Removes a single chat ID from `data/chat_ids.json`. Called when a user sends `/stop` to the bot.
+
+<ParamField path="chatId" type="number" required>
+  The Telegram chat ID to remove.
+</ParamField>
+
+### `notifyAllUsers`
+
+```typescript
+export async function notifyAllUsers(message: string): Promise<void>
+```
+
+Broadcasts an HTML-formatted message to every subscriber.
+
+<ParamField path="message" type="string" required>
+  The HTML message string to send. Delivered with `parse_mode: 'HTML'`.
+</ParamField>
+
+## Broadcast behavior
+
+### Rate limiting
+
+When there is more than one subscriber, a delay is inserted between each send:
+
+```typescript
+if (chatIds.length > 1) {
+  await new Promise((resolve) =>
+    setTimeout(resolve, config.rateLimit.telegramSendDelayMs)
+  );
+}
+```
+
+The default delay is **50 ms** per message, respecting Telegram's rate limits for bot broadcasts.
+
+### Per-message timeout
+
+Each `sendMessage` call is wrapped in a `Promise.race` with a 15-second timeout:
+
+```typescript
+await Promise.race([
+  telegram.sendMessage(chatId, message, { parse_mode: 'HTML' }),
+  new Promise<never>((_, reject) =>
+    setTimeout(
+      () => reject(new Error('sendMessage timeout')),
+      config.http.telegramTimeoutMs,
+    )
+  ),
+]);
+```
+
+This prevents a single unresponsive Telegram connection from blocking the entire broadcast loop.
+
+### Permanent error handling
+
+Errors returned by the Telegram API are classified as permanent or transient:
+
+- **403** — bot was blocked or kicked by the user
+- **400 with `chat not found`** — chat was deleted or the ID is invalid
+
+When a permanent error is detected, the chat ID is collected and removed from `chat_ids.json` at the end of the broadcast run via a single batched write.
+
+```typescript
+function isPermanentError(err: unknown): boolean {
+  const code = (err as any)?.response?.error_code;
+  const desc: string = (err as any)?.response?.description ?? '';
+  return code === 403 || (code === 400 && desc.toLowerCase().includes('chat not found'));
+}
+```
+
+Transient errors (network timeouts, temporary Telegram outages) are logged with their error code but do not remove the subscriber.
+
+## Atomic file writes
+
+All writes to `chat_ids.json` use `write-file-atomic`, which writes to a temporary file and then renames it to the target path. This guarantees that the file is never left in a partial or corrupt state if the process crashes mid-write.
+
+<Note>
+  Chat IDs are truncated to their **last 4 digits** in all log output — e.g., `***4321`. This provides enough information for debugging without exposing full chat IDs in server logs.
+</Note>

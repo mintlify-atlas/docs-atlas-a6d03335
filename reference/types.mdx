@@ -1,0 +1,252 @@
+---
+title: "TypeScript types"
+description: "Complete reference for all interfaces and union types defined in src/types/index.ts."
+---
+
+All shared types are defined in `src/types/index.ts` and imported across the pipeline services, filters, notifier, and bot commands.
+
+---
+
+## Deal
+
+Raw deal object returned by the CheapShark API. All numeric values arrive as strings and are parsed downstream.
+
+```typescript
+export interface Deal {
+  title: string;
+  metacriticScore: string;
+  steamRatingText: string;
+  steamRatingPercent: string;
+  salePrice: string;
+  normalPrice: string;
+  savings: string;
+  steamAppID: string;
+  dealID: string;
+  thumb: string;
+}
+```
+
+<ResponseField name="title" type="string">
+  Display name of the game as returned by CheapShark.
+</ResponseField>
+
+<ResponseField name="metacriticScore" type="string">
+  Metacritic review score as a numeric string. Empty string if no score exists.
+</ResponseField>
+
+<ResponseField name="steamRatingText" type="string">
+  Steam user review category label, e.g. `"Very Positive"`, `"Overwhelmingly Positive"`, `"Mixed"`.
+</ResponseField>
+
+<ResponseField name="steamRatingPercent" type="string">
+  Percentage of positive Steam user reviews as a numeric string.
+</ResponseField>
+
+<ResponseField name="salePrice" type="string">
+  Current discounted price in USD.
+</ResponseField>
+
+<ResponseField name="normalPrice" type="string">
+  Original price in USD before the sale.
+</ResponseField>
+
+<ResponseField name="savings" type="string">
+  Discount percentage as a decimal string (e.g. `"66.661110"`). Rounded to an integer and stored in `FilteredDeal.savingsPercent`.
+</ResponseField>
+
+<ResponseField name="steamAppID" type="string">
+  Steam application ID. Used as the canonical identifier throughout the entire pipeline.
+</ResponseField>
+
+<ResponseField name="dealID" type="string">
+  CheapShark deal hash. Used to construct the redirect URL: `https://www.cheapshark.com/redirect?dealID={dealID}`.
+</ResponseField>
+
+<ResponseField name="thumb" type="string">
+  URL of the Steam capsule thumbnail image.
+</ResponseField>
+
+---
+
+## FilteredDeal
+
+A deal that has passed both filter layers and is ready to be stored, cached, and sent to users. All numeric fields have been parsed from strings. Prices and scores come from the original CheapShark data — not from GPT.
+
+```typescript
+export interface FilteredDeal {
+  title: string;
+  steamAppID: string;
+  salePrice: string;
+  normalPrice: string;
+  savingsPercent: number;
+  metacriticScore: number;
+  steamRatingText: string;
+  dealUrl: string;
+  reason: string;
+}
+```
+
+<ResponseField name="title" type="string">
+  Display name of the game.
+</ResponseField>
+
+<ResponseField name="steamAppID" type="string">
+  Steam application ID.
+</ResponseField>
+
+<ResponseField name="salePrice" type="string">
+  Current sale price in USD.
+</ResponseField>
+
+<ResponseField name="normalPrice" type="string">
+  Original price in USD.
+</ResponseField>
+
+<ResponseField name="savingsPercent" type="number">
+  Discount percentage as a rounded integer (e.g. `66`). Parsed from `Deal.savings`.
+</ResponseField>
+
+<ResponseField name="metacriticScore" type="number">
+  Metacritic score as an integer. `0` if not available.
+</ResponseField>
+
+<ResponseField name="steamRatingText" type="string">
+  Steam review category label.
+</ResponseField>
+
+<ResponseField name="dealUrl" type="string">
+  CheapShark redirect URL constructed from `dealID`. Sends the user to the active Steam deal page.
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Brief curation reason provided by GPT, in Spanish. This is the **only field sourced from the AI model**. Truncated to `config.ai.maxReasonLength` (120 characters) even if GPT exceeds the 12-word prompt limit.
+</ResponseField>
+
+---
+
+## NotifiedGame
+
+Minimal deduplication record written to `data/notified.json` after each successful broadcast. Only the fields strictly necessary for deduplication are stored.
+
+```typescript
+export interface NotifiedGame {
+  steamAppID: string;
+  notifiedAt: string;
+}
+```
+
+<ResponseField name="steamAppID" type="string">
+  Steam application ID of the notified game.
+</ResponseField>
+
+<ResponseField name="notifiedAt" type="string">
+  ISO 8601 date-time string recording when the game was last notified. Used to enforce the deduplication window (`DEDUP_DAYS`, default 7 days).
+</ResponseField>
+
+<Note>
+  `title` is intentionally **not** stored in `NotifiedGame`. The title is not needed for
+  deduplication — only the `steamAppID` and timestamp are required to determine whether a game
+  has been recently notified.
+</Note>
+
+---
+
+## AISelection
+
+Structured output from GPT representing the curation decision. GPT selects which candidate IDs pass and provides a brief reason for each.
+
+```typescript
+export interface AISelection {
+  selectedIds: string[];
+  reasons: Record<string, string>;
+}
+```
+
+<ResponseField name="selectedIds" type="string[]">
+  Array of `steamAppID` strings chosen by GPT. Only IDs present in the input candidate set are accepted.
+</ResponseField>
+
+<ResponseField name="reasons" type="Record<string, string>">
+  Map of `steamAppID` to a brief curation reason in Spanish. Keys correspond to entries in `selectedIds`.
+</ResponseField>
+
+---
+
+## AIFilterResult
+
+Union type returned by `filterDealsWithAI`. Distinguishes a successful selection from a parse or network failure.
+
+```typescript
+export type AIFilterResult =
+  | { status: 'ok'; selection: AISelection }
+  | { status: 'error'; reason: string };
+```
+
+<ResponseField name="status" type="'ok' | 'error'">
+  `'ok'` — GPT responded with valid JSON and the selection was parsed successfully.
+
+  `'error'` — GPT returned invalid JSON, the request timed out, or another failure occurred. The pipeline falls back to `PipelineResult { status: 'ai_error' }`.
+</ResponseField>
+
+<ResponseField name="selection" type="AISelection">
+  Present when `status` is `'ok'`. Contains the selected IDs and reasons.
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Present when `status` is `'error'`. Human-readable description of the failure.
+</ResponseField>
+
+---
+
+## PipelineResult
+
+Union type returned by `fetchDeals` (the top-level pipeline orchestrator) and propagated to bot command handlers. Distinguishes three distinct outcomes.
+
+```typescript
+export type PipelineResult =
+  | { status: 'ok'; deals: FilteredDeal[] }
+  | { status: 'no_deals' }
+  | { status: 'ai_error'; reason: string };
+```
+
+<ResponseField name="status" type="'ok' | 'no_deals' | 'ai_error'">
+  `'ok'` — pipeline completed successfully and at least one deal is available.
+
+  `'no_deals'` — pipeline completed but no deals survived both filter layers.
+
+  `'ai_error'` — the AI filter failed. The bot replies with a user-facing error message and does not show deals.
+</ResponseField>
+
+<ResponseField name="deals" type="FilteredDeal[]">
+  Present when `status` is `'ok'`. The final curated list of deals ready to be formatted and sent.
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Present when `status` is `'ai_error'`. Propagated from `AIFilterResult.reason`.
+</ResponseField>
+
+---
+
+## DailySnapshot
+
+Persisted cache record written to `data/snapshot.json` after each successful pipeline run. The `/deals` command reads from this snapshot directly rather than re-running the pipeline on every request.
+
+```typescript
+export interface DailySnapshot {
+  deals: FilteredDeal[];
+  candidatesHash: string;
+  createdAt: string;
+}
+```
+
+<ResponseField name="deals" type="FilteredDeal[]">
+  The final curated deal list from the most recent successful pipeline run.
+</ResponseField>
+
+<ResponseField name="candidatesHash" type="string">
+  SHA hash of the rule-filtered candidate set. If the same candidates are present on the next run, the pipeline skips the GPT call and reuses the existing snapshot.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string">
+  ISO 8601 date-time string recording when the snapshot was created. Used to determine whether the snapshot is still valid for the current day.
+</ResponseField>

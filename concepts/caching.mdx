@@ -1,0 +1,178 @@
+---
+title: "Caching and deduplication"
+description: "How Steam Deals AI avoids redundant GPT calls with snapshot and candidate hash caching, and how it prevents re-broadcasting the same game."
+---
+
+The caching layer has two distinct responsibilities: avoiding unnecessary calls to GPT-4o-mini when the deal landscape has not changed, and preventing the same game from being broadcast to users more than once within a configurable window.
+
+## Snapshot cache
+
+After a successful pipeline run, the result is persisted to `data/snapshot.json`.
+
+### Data structure
+
+```typescript types/index.ts
+export interface DailySnapshot {
+  deals: FilteredDeal[]; // final curated result
+  candidatesHash: string; // SHA-256 digest of the candidate set
+  createdAt: string;      // ISO timestamp — used to check freshness
+}
+```
+
+### Snapshot freshness
+
+A snapshot is considered fresh if its `createdAt` date matches today's date in the `America/Bogota` timezone.
+
+```typescript snapshotCache.ts
+export function isSnapshotFresh(snapshot: DailySnapshot): boolean {
+  const tz = 'America/Bogota';
+  const opts: Intl.DateTimeFormatOptions = {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  };
+  const snapshotDay = new Intl.DateTimeFormat('en-CA', opts).format(new Date(snapshot.createdAt));
+  const todayDay    = new Intl.DateTimeFormat('en-CA', opts).format(new Date());
+  return snapshotDay === todayDay;
+}
+```
+
+<Info>
+The timezone is hard-coded to `America/Bogota` because the cron schedule is defined in that timezone. Without this, a server running in UTC could compare dates against the wrong calendar day and incorrectly serve a yesterday's snapshot as fresh.
+</Info>
+
+### Startup cleanup
+
+At process startup, `clearStaleSnapshot()` is called to delete any snapshot that is not from today. This prevents the bot from serving outdated deals if it was restarted after being offline for one or more days.
+
+```typescript snapshotCache.ts
+export function clearStaleSnapshot(): void {
+  const snapshot = loadSnapshot();
+  if (snapshot && !isSnapshotFresh(snapshot)) {
+    try {
+      fs.unlinkSync(SNAPSHOT_FILE);
+      console.log('🗑️ Snapshot obsoleto eliminado (era de un día anterior)');
+    } catch {
+      // Non-critical — the pipeline will overwrite it on next run
+    }
+  }
+}
+```
+
+## Candidate hash caching
+
+Every time the pipeline runs, the Layer 1 candidate set is hashed before calling GPT. If the hash matches the one stored in the snapshot, the existing selection is reused and GPT is not called.
+
+### The hash function
+
+```typescript snapshotCache.ts
+export function hashCandidates(candidates: {
+  steamAppID: string;
+  title: string;
+  metacriticScore: string;
+  steamRatingText: string;
+  salePrice: string;
+  normalPrice: string;
+  savings: string;
+  dealID: string;
+}[]): string {
+  // Sort by steamAppID to ensure determinism regardless of fetch order
+  const sorted = [...candidates].sort((a, b) => a.steamAppID.localeCompare(b.steamAppID));
+  const payload = JSON.stringify(sorted.map((c) => ({
+    id:      c.steamAppID,
+    title:   c.title,
+    meta:    c.metacriticScore,
+    rating:  c.steamRatingText,
+    sale:    c.salePrice,
+    normal:  c.normalPrice,
+    savings: c.savings,
+    deal:    c.dealID, // changes if the dealID rotates even for the same game
+  })));
+  return crypto.createHash('sha256').update(payload).digest('hex').slice(0, 16);
+}
+```
+
+### Fields included in the hash
+
+The hash covers both the fields GPT uses for its decision and the fields that determine the deal visible to the user:
+
+| Field | Why it's included |
+|---|---|
+| `steamAppID` | Game identity |
+| `title` | Sent to GPT for recognition |
+| `metacriticScore` | Sent to GPT for recognition |
+| `steamRatingText` | Sent to GPT for recognition |
+| `salePrice` | User-visible data; a price change should invalidate the cache |
+| `normalPrice` | User-visible data; affects displayed discount |
+| `savings` | User-visible data |
+| `dealID` | Changes when CheapShark rotates the deal link |
+
+<Tip>
+Sorting candidates by `steamAppID` before hashing is essential. CheapShark does not guarantee a stable fetch order, so the same set of deals could arrive in different orders on successive calls.
+</Tip>
+
+## When is GPT called?
+
+| Scenario | GPT called? | Reason |
+|---|---|---|
+| First run of the day, no snapshot | Yes | No hash to compare against |
+| Candidates changed since last snapshot | Yes | Hash mismatch |
+| `/deals` requested, fresh snapshot exists | No | Snapshot served directly |
+| Cron fires, same candidates as last run | No | Hash matched |
+| GPT call fails, fresh snapshot exists | No | Snapshot used as fallback |
+| GPT call fails, no fresh snapshot | — | `ai_error` returned; no broadcast |
+
+## Deduplication
+
+The deduplication system prevents the same game from being recommended to users more than once within a rolling window.
+
+### Data structure
+
+```typescript types/index.ts
+export interface NotifiedGame {
+  steamAppID: string;
+  notifiedAt: string; // ISO date string
+  // title is NOT stored — not needed for deduplication
+}
+```
+
+Records are persisted to `data/notified_games.json`.
+
+### How it works
+
+<Steps>
+  <Step title="Load notified IDs">
+    Before Layer 1 runs, `getNotifiedIds()` reads `notified_games.json` and returns a `Set<string>` of `steamAppID` values whose `notifiedAt` is within the last `DEDUP_DAYS` days.
+  </Step>
+  <Step title="Inject into rules filter">
+    The `notifiedIds` set is passed to `applyHardFilters()`. Any deal whose `steamAppID` is in the set is rejected immediately. This keeps `rulesFilter.ts` free of I/O.
+  </Step>
+  <Step title="Mark after broadcast">
+    After a successful cron broadcast, `markAsNotified()` appends new entries and cleans up expired ones in a single atomic write.
+  </Step>
+</Steps>
+
+### Deduplication window
+
+The lookback window is configured with `DEDUP_DAYS` (default: `7`). A game broadcast on Monday will not appear again until the following Tuesday at the earliest.
+
+```typescript deduplication.ts
+function cutoffMs(): number {
+  return Date.now() - config.dedup.days * 24 * 60 * 60 * 1000;
+}
+```
+
+<Note>
+Deduplication applies only to the **cron broadcast path** (`fetchAndMarkDeals`). When a user calls `/deals`, the pipeline may include games that were already broadcast, because `fetchDeals` never writes to `notified_games.json`.
+</Note>
+
+### Atomic writes
+
+Both `snapshot.json` and `notified_games.json` are written using `write-file-atomic`, which writes to a temp file and renames it. This prevents a partial write from corrupting the file if the process is interrupted.
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    How the cache layer fits into the overall system and the pipeline lock.
+  </Card>
+  <Card title="Filter pipeline" icon="filter" href="/concepts/filter-pipeline">
+    The Layer 1 rules that produce the candidate set that is hashed.
+  </Card>
+</CardGroup>

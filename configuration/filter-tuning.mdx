@@ -1,0 +1,94 @@
+---
+title: "Tuning the filter"
+description: "How to adjust the two-layer hybrid filter parameters to control deal quality, volume, and variety."
+---
+
+## How the filter works
+
+Deals pass through two layers before being broadcast:
+
+1. **Layer 1 — deterministic rules** (`rulesFilter.ts`): fast, free, and fully configurable via environment variables.
+2. **Layer 2 — GPT curation**: the AI evaluates only the deals that survive Layer 1, selecting the best ones and generating a short reason for each.
+
+Tuning Layer 1 directly controls how many candidates reach the AI, which affects both cost and quality.
+
+### Quality check: OR logic
+
+A game passes the quality check if it satisfies **either** condition:
+
+```
+hasGoodMetacritic = metacriticScore > 0 AND metacriticScore >= MIN_METACRITIC_SCORE
+hasGoodSteamRating = steamRatingPercent >= MIN_STEAM_RATING_PERCENT
+
+passes = hasGoodMetacritic OR hasGoodSteamRating
+```
+
+This means a game with no Metacritic score can still pass if its Steam rating is high enough, and vice versa. The hard filters (discount and price) are always applied with AND logic — a game must satisfy all of them regardless.
+
+<Tip>
+  Set `MIN_METACRITIC_SCORE=0` to disable the Metacritic check entirely. This is especially useful for newer indie games that have not yet been reviewed by Metacritic, allowing them to qualify on Steam rating alone.
+</Tip>
+
+## Parameter trade-offs
+
+| Parameter | Increasing it | Decreasing it |
+|---|---|---|
+| `MIN_DISCOUNT_PERCENT` | Fewer deals, all more heavily discounted | More deals, includes moderate discounts |
+| `MIN_METACRITIC_SCORE` | Stricter quality floor, fewer games qualify via Metacritic | More lenient; set to `0` to disable entirely |
+| `MIN_STEAM_RATING_PERCENT` | Stricter community rating requirement | Allows games with mixed or lower ratings |
+| `MAX_PRICE_USD` | *(lower value)* Only cheap deals make it through | *(higher value)* Includes premium-priced titles on sale |
+| `DEALS_PAGE_SIZE` | More candidates for the AI → potentially better selection, slightly higher AI cost | Fewer candidates, faster and cheaper but may miss good deals |
+
+## Recommended configurations
+
+<Tabs>
+  <Tab title="Strict (AAA only)">
+    High thresholds to surface only deeply discounted, critically acclaimed titles.
+
+    ```bash
+    MIN_DISCOUNT_PERCENT=70
+    MIN_METACRITIC_SCORE=80
+    MIN_STEAM_RATING_PERCENT=80
+    MAX_PRICE_USD=30
+    DEALS_PAGE_SIZE=30
+    ```
+
+    Expect fewer daily deals — sometimes none. Best for users who only want well-known, high-quality games at steep discounts.
+  </Tab>
+
+  <Tab title="Balanced (default)">
+    The default values strike a balance between quality and variety.
+
+    ```bash
+    MIN_DISCOUNT_PERCENT=50
+    MIN_METACRITIC_SCORE=70
+    MIN_STEAM_RATING_PERCENT=70
+    MAX_PRICE_USD=60
+    DEALS_PAGE_SIZE=60
+    ```
+
+    A solid starting point for most use cases. Delivers a handful of curated deals each day covering a mix of genres and price points.
+  </Tab>
+
+  <Tab title="Broad (more variety)">
+    Lower thresholds to include more indie games, newer releases, and moderately discounted titles.
+
+    ```bash
+    MIN_DISCOUNT_PERCENT=30
+    MIN_METACRITIC_SCORE=0
+    MIN_STEAM_RATING_PERCENT=60
+    MAX_PRICE_USD=60
+    DEALS_PAGE_SIZE=60
+    ```
+
+    Setting `MIN_METACRITIC_SCORE=0` removes the Metacritic gate entirely, so indie games and recent releases that lack Metacritic coverage can qualify based on Steam ratings alone. Expect a higher volume of daily deals.
+  </Tab>
+</Tabs>
+
+## Interaction between parameters
+
+The parameters are not fully independent. A few things to keep in mind:
+
+- **`DEALS_PAGE_SIZE` is an upstream cap.** CheapShark returns at most `DEALS_PAGE_SIZE` deals sorted by deal rating. If you set strict quality thresholds, increasing this value gives the filter a larger pool to draw from.
+- **Price and discount compound.** A game with a 70% discount on a $200 title still passes `MAX_PRICE_USD=60` at $60. If you want to avoid expensive titles even on deep discount, lower `MAX_PRICE_USD`.
+- **Metacritic coverage is incomplete.** Many indie games and some newer releases have no Metacritic score. When `MIN_METACRITIC_SCORE > 0`, those games can still pass via `MIN_STEAM_RATING_PERCENT`. Setting `MIN_METACRITIC_SCORE=0` removes this asymmetry.

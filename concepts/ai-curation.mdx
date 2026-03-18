@@ -1,0 +1,171 @@
+---
+title: "AI curation"
+description: "How GPT-4o-mini selects up to 10 deals from the Layer 1 candidate set and what the model actually contributes to the final output."
+---
+
+Layer 2 is the AI curation step. It receives only the games that passed the deterministic rules filter and decides which ones are worth recommending based on community recognition, studio reputation, and cultural relevance in the gaming space.
+
+## What GPT receives
+
+Only identification and rating data is sent to the model — not prices, not deal URLs. This is intentional: the model cannot influence financial or navigational data in the output.
+
+```typescript openaiFilter.ts
+const input = deals.map((d) => ({
+  steamAppID: d.steamAppID,
+  title: d.title,
+  metacriticScore: parseInt(d.metacriticScore) || 0,
+  steamRatingPercent: parseInt(d.steamRatingPercent) || 0,
+  steamRatingText: d.steamRatingText,
+}));
+```
+
+## System prompt
+
+The full prompt used in production:
+
+```text
+Eres un experto curador de videojuegos. Los juegos que recibes YA pasaron un filtro
+de calidad (buen Metacritic o Steam Rating, buen descuento). Tu trabajo es seleccionar
+hasta 10 juegos con reconocimiento o señales claras de calidad en la comunidad gamer.
+Prioriza devolver entre 8 y 10 si hay suficientes candidatos buenos que realmente
+valga la pena recomendar.
+
+SELECCIONA si cumple al menos uno:
+1. Juegos AAA de grandes estudios (EA, Ubisoft, CD Projekt, Rockstar, Bethesda, etc.)
+2. Juegos AA de estudios medianos con buena reputación o trayectoria reconocible
+3. Indies muy reconocidos o premiados (Hades, Hollow Knight, Celeste, Stardew Valley, etc.)
+4. Indies menos conocidos pero con reseñas extremadamente positivas
+   (por ejemplo "Overwhelmingly Positive") o reputación muy sólida
+5. Juegos que fueron trending o virales en los últimos 5 años
+6. Franquicias conocidas aunque sea una entrega menor
+7. Juegos de nicho con comunidades fieles y reputación fuerte en espacios gaming
+   (Reddit, YouTube, Twitch, foros especializados, etc.)
+
+DESCARTA:
+- Juegos totalmente desconocidos sin señales claras de reconocimiento o comunidad
+- Asset flips o simuladores genéricos sin comunidad
+- DLCs de juegos no reconocidos
+
+Responde ÚNICAMENTE con JSON, sin texto adicional:
+{
+  "selectedIds": ["steamAppID_1", "steamAppID_2"],
+  "reasons": {
+    "steamAppID_1": "razón breve en español, máx 12 palabras",
+    "steamAppID_2": "razón breve en español, máx 12 palabras"
+  }
+}
+
+Si ninguno tiene reconocimiento, retorna { "selectedIds": [], "reasons": {} }.
+```
+
+## Selection criteria
+
+**Select** a game if it meets at least one of:
+
+- AAA title from a major studio (EA, Ubisoft, CD Projekt, Rockstar, Bethesda, etc.)
+- AA title from a mid-size studio with a recognizable track record
+- Well-known or award-winning indie (Hades, Hollow Knight, Celeste, Stardew Valley, etc.)
+- Lesser-known indie with an "Overwhelmingly Positive" Steam rating or equivalent community reputation
+- Trending or viral game from the past five years
+- Any entry in a recognized franchise
+- Niche title with a loyal community visible on Reddit, YouTube, Twitch, or specialist forums
+
+**Discard** if:
+
+- The game is entirely unknown with no community signals
+- It is an asset flip or generic simulator without a community
+- It is a DLC for a game that is itself not recognized
+
+## JSON response format
+
+GPT must respond with a single JSON object — no prose, no markdown fences:
+
+```json
+{
+  "selectedIds": ["440", "570", "730"],
+  "reasons": {
+    "440": "Team Fortress 2: shooter clásico de Valve con millones de jugadores",
+    "570": "Dota 2: MOBA de referencia con comunidad activa enorme",
+    "730": "CS2: shooter táctico más jugado en Steam"
+  }
+}
+```
+
+<Note>
+The `reasons` field is the **only** content GPT contributes to the final `FilteredDeal` output. All other fields — title, price, discount, deal URL — are taken from the original CheapShark response.
+</Note>
+
+## What GPT does not contribute
+
+The `buildFilteredDeals` function reconstructs deals from the original candidates using only GPT's selected IDs:
+
+```typescript openaiFilter.ts
+/**
+ * Reconstructs FilteredDeal[] from the original candidates using GPT's selection.
+ * Price/URL data comes from CheapShark, not the model.
+ * The `reason` (the only free-form GPT field) is truncated to config.ai.maxReasonLength.
+ */
+export function buildFilteredDeals(
+  candidates: Deal[],
+  selection: { selectedIds: string[]; reasons: Record<string, string> },
+): FilteredDeal[] {
+  const dealMap = new Map(candidates.map((d) => [d.steamAppID, d]));
+
+  return selection.selectedIds
+    .map((id) => {
+      const d = dealMap.get(id);
+      if (!d) return null;
+
+      const rawReason = typeof selection.reasons[id] === 'string' ? selection.reasons[id] : '';
+      const reason = rawReason.slice(0, config.ai.maxReasonLength);
+
+      return {
+        title: d.title,
+        steamAppID: d.steamAppID,
+        salePrice: d.salePrice,
+        normalPrice: d.normalPrice,
+        savingsPercent: Math.round(parseFloat(d.savings)),
+        metacriticScore: parseInt(d.metacriticScore) || 0,
+        steamRatingText: d.steamRatingText,
+        dealUrl: `https://www.cheapshark.com/redirect?dealID=${encodeURIComponent(d.dealID)}`,
+        reason,
+      } satisfies FilteredDeal;
+    })
+    .filter((d): d is FilteredDeal => d !== null);
+}
+```
+
+<Warning>
+GPT cannot invent `steamAppID` values. Every ID in `selectedIds` is validated against the original candidate set before `buildFilteredDeals` is called. Any ID not present in `candidates` is silently dropped.
+</Warning>
+
+## Temperature and determinism
+
+The model is called with `temperature: 0`. With a fixed temperature and identical input, GPT-4o-mini produces the same output on every call. This is what makes the [candidate hash cache](/concepts/caching) reliable: if the hash matches, the model would return exactly the same selection anyway, so the call is safely skipped.
+
+## Model configuration
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| Model | `gpt-4o-mini` (configurable via `OPENAI_MODEL`) | Cost-effective for classification tasks |
+| `temperature` | `0` | Deterministic output; required for hash caching |
+| `response_format` | `json_object` | Prevents prose responses, simplifies parsing |
+| Timeout | `30 000 ms` | Prevents indefinite hangs on slow API responses |
+| `maxReasonLength` | `120` characters | Guards against unexpectedly long reasons |
+
+## Error handling
+
+If the API call times out or GPT returns malformed JSON, `filterDealsWithAI` returns `{ status: 'error', reason: '...' }`. The orchestrator then:
+
+1. Checks whether a fresh snapshot exists from earlier today.
+2. If yes — returns the snapshot as a fallback.
+3. If no — returns `{ status: 'ai_error' }` to the caller. The cron job suppresses the broadcast rather than sending a misleading "no deals today" message.
+
+<CardGroup cols={2}>
+  <Card title="Filter pipeline" icon="filter" href="/concepts/filter-pipeline">
+    The Layer 1 rules that produce the candidate set GPT receives.
+  </Card>
+  <Card title="Caching and deduplication" icon="database" href="/concepts/caching">
+    How candidate hashing avoids redundant GPT calls.
+  </Card>
+</CardGroup>

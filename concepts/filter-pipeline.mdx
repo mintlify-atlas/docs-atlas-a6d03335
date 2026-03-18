@@ -1,0 +1,110 @@
+---
+title: "Filter pipeline"
+description: "How Layer 1 deterministic rules reduce thousands of Steam deals to a quality candidate set before AI curation."
+---
+
+Layer 1 is a pure, synchronous filter applied to every deal returned by CheapShark before any AI call is made. It enforces hard thresholds for discount depth, price ceiling, and review quality, then removes games already broadcast within the deduplication window.
+
+## Configuration
+
+All thresholds are configurable via environment variables. The defaults are:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MIN_DISCOUNT_PERCENT` | `50` | Minimum savings percentage |
+| `MIN_METACRITIC_SCORE` | `70` | Minimum Metacritic score (0–100) |
+| `MIN_STEAM_RATING_PERCENT` | `70` | Minimum Steam rating percentage |
+| `MAX_PRICE_USD` | `60` | Maximum sale price in USD |
+| `DEALS_PAGE_SIZE` | `60` | Number of deals to fetch from CheapShark |
+| `DEDUP_DAYS` | `7` | Days before a notified game can appear again |
+
+## Filter logic
+
+Each deal is evaluated against two categories of criteria.
+
+### Rejection conditions (all must pass)
+
+A deal is **rejected immediately** if any of these is true:
+
+1. `savings < MIN_DISCOUNT_PERCENT` — discount is too shallow.
+2. `salePrice > MAX_PRICE_USD` — absolute price is too high.
+3. `steamAppID` is in the recent deduplication set — game was already notified within `DEDUP_DAYS` days.
+
+### Quality condition (OR logic)
+
+A deal that survives the rejection conditions must also meet **at least one** quality signal:
+
+- `metacriticScore >= MIN_METACRITIC_SCORE` (only evaluated if a Metacritic score exists)
+- `steamRatingPercent >= MIN_STEAM_RATING_PERCENT`
+
+<Info>
+The OR logic means a game with no Metacritic score can still pass if its Steam community rating is strong enough — and vice versa.
+</Info>
+
+## Why Metacritic is not filtered upstream
+
+CheapShark supports a `metacritic` query parameter to request only deals above a score threshold. This filter is **intentionally not used**.
+
+Because the quality check is an OR between Metacritic and Steam Rating, filtering by Metacritic upstream would silently discard all games that have no Metacritic score but have excellent Steam reviews. The full candidate universe must be fetched and evaluated locally.
+
+<Warning>
+Do not add a `metacritic` parameter to the CheapShark request. Doing so would break the OR logic and drop valid high-rated indie games.
+</Warning>
+
+## Source code
+
+```typescript rulesFilter.ts
+export function applyHardFilters(
+  deals: Deal[],
+  options: RulesFilterOptions,
+  notifiedIds: Set<string>,
+): Deal[] {
+  return deals.filter((deal) => {
+    const savings = parseFloat(deal.savings);
+    const salePrice = parseFloat(deal.salePrice);
+    const metacritic = parseInt(deal.metacriticScore) || 0;
+    const steamRating = parseInt(deal.steamRatingPercent) || 0;
+
+    if (savings < options.minDiscountPercent) return false;
+    if (salePrice > options.maxPriceUSD) return false;
+    if (notifiedIds.has(deal.steamAppID)) return false;
+
+    const hasGoodMetacritic = metacritic > 0 && metacritic >= options.minMetacriticScore;
+    const hasGoodSteamRating = steamRating >= options.minSteamRatingPercent;
+
+    return hasGoodMetacritic || hasGoodSteamRating;
+  });
+}
+```
+
+<Note>
+`applyHardFilters` has no I/O. The `notifiedIds` set is built by `dealsService.ts` before calling this function, which keeps `rulesFilter.ts` pure and trivially testable.
+</Note>
+
+## Worked example
+
+Assume default thresholds: `MIN_DISCOUNT_PERCENT=50`, `MIN_METACRITIC_SCORE=70`, `MIN_STEAM_RATING_PERCENT=70`, `MAX_PRICE_USD=60`.
+
+| Game | Savings | Sale price | Metacritic | Steam rating | Verdict |
+|---|---|---|---|---|---|
+| Game A | 75% | $9.99 | 82 | 88% | **Pass** — discount ✓, price ✓, Metacritic ✓ |
+| Game B | 60% | $14.99 | 0 (none) | 91% | **Pass** — discount ✓, price ✓, Steam rating ✓ |
+| Game C | 80% | $4.99 | 65 | 68% | **Reject** — neither quality signal passes |
+| Game D | 40% | $7.99 | 85 | 90% | **Reject** — discount below minimum |
+| Game E | 70% | $74.99 | 90 | 95% | **Reject** — price exceeds maximum |
+| Game F | 65% | $12.99 | 75 | 80% | **Reject** — already notified this week |
+
+Games A and B become candidates passed to Layer 2 (AI curation).
+
+## What comes next
+
+Candidates from Layer 1 are hashed and compared against the stored snapshot. If the hash matches, the previous AI selection is reused. If not, they are sent to GPT-4o-mini for curation.
+
+<CardGroup cols={2}>
+  <Card title="AI curation" icon="sparkles" href="/concepts/ai-curation">
+    How GPT-4o-mini curates the candidate set and what the model actually contributes.
+  </Card>
+  <Card title="Caching and deduplication" icon="database" href="/concepts/caching">
+    How the candidate hash prevents unnecessary GPT calls.
+  </Card>
+</CardGroup>

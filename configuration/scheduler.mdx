@@ -1,0 +1,108 @@
+---
+title: "Scheduler"
+description: "Configure when the bot sends its daily deal broadcast using a standard cron expression."
+---
+
+## Overview
+
+The bot uses [node-cron](https://github.com/node-cron/node-cron) to run the deal pipeline on a fixed schedule. Each time the cron fires, it fetches deals, runs both filter layers, and broadcasts the result to all subscribed users.
+
+The schedule is controlled by the `CRON_SCHEDULE` environment variable and always runs in the **America/Bogota (UTC-5)** timezone.
+
+## Cron expression format
+
+Expressions follow the standard five-field cron syntax:
+
+```
+┌───────────── minute (0–59)
+│ ┌─────────── hour (0–23)
+│ │ ┌───────── day of month (1–31)
+│ │ │ ┌─────── month (1–12)
+│ │ │ │ ┌───── day of week (0–7, 0 and 7 = Sunday)
+│ │ │ │ │
+* * * * *
+```
+
+The default schedule is:
+
+```bash
+CRON_SCHEDULE=0 9 * * *   # Every day at 9:00 AM Bogotá time
+```
+
+<Note>
+  The cron expression is validated at startup. If `CRON_SCHEDULE` contains an invalid expression, the bot will throw an error and exit before connecting to Telegram.
+</Note>
+
+## Timezone
+
+The scheduler is hardcoded to run in the **America/Bogota** timezone (UTC-5, no daylight saving time). This is set via the `timezone` option passed directly to `node-cron` in `src/scheduler/cronJobs.ts`:
+
+```typescript
+cron.schedule(config.cron.schedule, async () => {
+  // ...
+}, { timezone: 'America/Bogota' });
+```
+
+<Warning>
+  Changing the timezone requires modifying `src/scheduler/cronJobs.ts` directly. The `CRON_SCHEDULE` environment variable only controls the **schedule expression** — not the timezone. There is no environment variable for timezone.
+</Warning>
+
+## Schedule examples
+
+| Expression | Description |
+|---|---|
+| `0 9 * * *` | Every day at 9:00 AM Bogotá time *(default)* |
+| `0 18 * * *` | Every day at 6:00 PM Bogotá time |
+| `0 9 * * 1-5` | Weekdays only at 9:00 AM |
+| `0 9,18 * * *` | Twice daily at 9:00 AM and 6:00 PM |
+
+For help building or validating cron expressions, use [crontab.guru](https://crontab.guru).
+
+## Scheduler source
+
+The full `startScheduler` function in `src/scheduler/cronJobs.ts`:
+
+```typescript
+export function startScheduler(): void {
+  console.log(`⏰ Cron activado con schedule: "${config.cron.schedule}"`);
+
+  cron.schedule(config.cron.schedule, async () => {
+    console.log(`[${new Date().toISOString()}] 🔄 Ejecutando búsqueda de ofertas...`);
+    try {
+      const result = await fetchAndMarkDeals();
+
+      if (result.status === 'ai_error') {
+        // No enviar broadcast — un mensaje "no hay ofertas" sería engañoso.
+        // El error ya fue logueado en runPipeline(); aquí solo registramos el ciclo fallido.
+        console.error(`❌ Cron: broadcast omitido por fallo de IA. Razón: ${result.reason}`);
+        return;
+      }
+
+      if (result.status === 'no_deals' || result.deals.length === 0) {
+        // Sin ofertas que superen los filtros hoy — silencio correcto, no es un error.
+        console.log('📭 Cron: sin ofertas destacadas hoy. No se envía broadcast.');
+        return;
+      }
+
+      const copRate = await getExchangeRate();
+      const message = formatDealsMessage(result.deals, copRate);
+      await notifyAllUsers(message);
+      console.log(`✅ Broadcast enviado: ${result.deals.length} ofertas.`);
+    } catch (err) {
+      const msg = (err as Error).message ?? 'sin mensaje';
+      console.error(`❌ Error inesperado en cron: ${msg}`);
+    }
+  }, { timezone: 'America/Bogota' });
+}
+```
+
+## Error handling during cron runs
+
+The scheduler handles two non-fatal outcomes silently without sending a message to users:
+
+| Outcome | `result.status` | Behavior |
+|---|---|---|
+| AI curation failed | `ai_error` | Logs the error and skips the broadcast. Sending "no deals today" would be misleading — the pipeline didn't finish. |
+| No deals passed the filters | `no_deals` or empty array | Logs a notice and skips the broadcast. This is a correct silent outcome, not an error. |
+
+Unexpected exceptions (network failures, unhandled rejections) are caught by the outer `try/catch` and logged to the console without crashing the process. The scheduler remains active and will retry on the next scheduled run.

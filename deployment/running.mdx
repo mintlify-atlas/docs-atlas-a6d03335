@@ -1,0 +1,58 @@
+---
+title: "Running the bot"
+description: "npm scripts, startup sequence, and graceful shutdown behavior."
+---
+
+## npm scripts
+
+| Script | Command | Description |
+| ------ | ------- | ----------- |
+| `npm run dev` | `tsx watch src/bot/index.ts` | Development mode — auto-reloads on file changes |
+| `npm run build` | `tsc` | Compiles TypeScript to `dist/` |
+| `npm start` | `node dist/bot/index.js` | Production mode — runs the compiled output |
+| `npm run test:deals` | `tsx src/scripts/testDeals.ts` | Runs the deals pipeline standalone, without launching the bot |
+
+<Tip>
+  Use `npm run test:deals` to verify your credentials and filter settings before starting the bot. It runs the full two-layer pipeline and prints results to stdout without sending anything to Telegram.
+</Tip>
+
+## Startup sequence
+
+When the bot process starts (`src/bot/index.ts`), it executes the following steps in order:
+
+<Steps>
+  <Step title="Clear stale snapshot">
+    `clearStaleSnapshot()` is called immediately. If `data/snapshot.json` was written on a previous calendar day, it is deleted so the bot does not serve outdated deals.
+  </Step>
+
+  <Step title="Create bot instance">
+    A `Telegraf` bot instance is created using the `BOT_TOKEN` from config.
+  </Step>
+
+  <Step title="Register commands">
+    `registerCommands(bot)` attaches handlers for `/start`, `/deals`, `/stop`, and `/help`.
+  </Step>
+
+  <Step title="Start the scheduler">
+    `startScheduler()` initializes the `node-cron` job that broadcasts deals to all subscribers on the configured schedule (default: `0 9 * * *` — 9 AM Colombia time).
+  </Step>
+
+  <Step title="Launch the bot">
+    `bot.launch()` connects to the Telegram API via long polling and begins processing incoming messages.
+  </Step>
+</Steps>
+
+<Note>
+  The bot uses **long polling**, not webhooks. It initiates outbound connections to the Telegram API — no inbound port needs to be open on your server.
+</Note>
+
+## Graceful shutdown
+
+The process listens for `SIGINT` (Ctrl+C) and `SIGTERM` (sent by process managers and container runtimes) and calls `bot.stop()` on either signal:
+
+```typescript
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
+```
+
+This ensures in-flight requests are completed and the Telegram session is cleanly closed before the process exits.

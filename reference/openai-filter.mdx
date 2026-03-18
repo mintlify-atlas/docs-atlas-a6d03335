@@ -1,0 +1,121 @@
+---
+title: "OpenAI filter"
+description: "Layer 2 AI curation using GPT-4o-mini. Selects notable deals from candidates and provides short Spanish-language reasons."
+---
+
+## Overview
+
+`src/services/openaiFilter.ts` is the second layer of the hybrid filter pipeline. After `rulesFilter` applies deterministic quality thresholds, this module sends the surviving candidates to GPT-4o-mini for community-recognition curation. GPT decides **which** games to include and provides a short reason for each — it never determines prices, URLs, or scores.
+
+## Exported functions
+
+### `filterDealsWithAI`
+
+```typescript
+export async function filterDealsWithAI(deals: Deal[]): Promise<AIFilterResult>
+```
+
+Sends the candidate list to GPT-4o-mini and returns the model's selection.
+
+<ParamField path="deals" type="Deal[]" required>
+  Candidate deals that have already passed the deterministic rules filter.
+</ParamField>
+
+Only a minimal projection is sent to the model — **prices and deal URLs are never included in the prompt**:
+
+```typescript
+const input = deals.map((d) => ({
+  steamAppID: d.steamAppID,
+  title: d.title,
+  metacriticScore: parseInt(d.metacriticScore) || 0,
+  steamRatingPercent: parseInt(d.steamRatingPercent) || 0,
+  steamRatingText: d.steamRatingText,
+}));
+```
+
+The model is called with `temperature: 0` and `response_format: { type: 'json_object' }` to ensure deterministic, structured output. An explicit timeout (`config.openai.timeoutMs`) prevents the process from hanging indefinitely.
+
+**Validation step:** GPT-returned IDs are cross-referenced against the original candidate set. Any ID not present in the original candidates is silently dropped before the result is returned.
+
+```typescript
+const validIds = new Set(deals.map((d) => d.steamAppID));
+const safeIds = selectedIds.filter((id) => typeof id === 'string' && validIds.has(id));
+```
+
+### `buildFilteredDeals`
+
+```typescript
+export function buildFilteredDeals(
+  candidates: Deal[],
+  selection: { selectedIds: string[]; reasons: Record<string, string> },
+): FilteredDeal[]
+```
+
+Reconstructs a `FilteredDeal[]` array using the model's `selectedIds` as a lookup key into the original `candidates`. All factual data (price, URL, scores) comes from `candidates`; only the `reason` string originates from GPT output.
+
+<ParamField path="candidates" type="Deal[]" required>
+  The same candidate array passed to `filterDealsWithAI`. Used as the authoritative data source.
+</ParamField>
+
+<ParamField path="selection" type="{ selectedIds: string[]; reasons: Record<string, string> }" required>
+  The validated selection returned by the AI. `selectedIds` controls ordering; `reasons` provides the human-readable curation note per game.
+</ParamField>
+
+The `reason` field is truncated to `config.ai.maxReasonLength` characters regardless of what GPT returned.
+
+## Return type — `AIFilterResult`
+
+<ResponseField name="status" type="'ok' | 'error'" required>
+  Discriminant field of the union.
+</ResponseField>
+
+<ResponseField name="selection" type="AISelection">
+  Present only when `status === 'ok'`. Contains `selectedIds` (validated array of steamAppIDs) and `reasons` (map of steamAppID to short Spanish reason).
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Present only when `status === 'error'`. Describes why the AI call or JSON parsing failed.
+</ResponseField>
+
+## System prompt
+
+The model receives the following system prompt on every call:
+
+```
+Eres un experto curador de videojuegos. Los juegos que recibes YA pasaron un filtro
+de calidad (buen Metacritic o Steam Rating, buen descuento). Tu trabajo es seleccionar
+hasta 10 juegos con reconocimiento o señales claras de calidad en la comunidad gamer.
+Prioriza devolver entre 8 y 10 si hay suficientes candidatos buenos que realmente
+valga la pena recomendar.
+
+SELECCIONA si cumple al menos uno:
+1. Juegos AAA de grandes estudios (EA, Ubisoft, CD Projekt, Rockstar, Bethesda, etc.)
+2. Juegos AA de estudios medianos con buena reputación o trayectoria reconocible
+3. Indies muy reconocidos o premiados (Hades, Hollow Knight, Celeste, Stardew Valley, etc.)
+4. Indies menos conocidos pero con reseñas extremadamente positivas
+   (por ejemplo "Overwhelmingly Positive") o reputación muy sólida
+5. Juegos que fueron trending o virales en los últimos 5 años
+6. Franquicias conocidas aunque sea una entrega menor
+7. Juegos de nicho con comunidades fieles y reputación fuerte en espacios gaming
+   (Reddit, YouTube, Twitch, foros especializados, etc.)
+
+DESCARTA:
+- Juegos totalmente desconocidos sin señales claras de reconocimiento o comunidad
+- Asset flips o simuladores genéricos sin comunidad
+- DLCs de juegos no reconocidos
+
+Responde ÚNICAMENTE con JSON, sin texto adicional:
+{
+  "selectedIds": ["steamAppID_1", "steamAppID_2"],
+  "reasons": {
+    "steamAppID_1": "razón breve en español, máx 12 palabras",
+    "steamAppID_2": "razón breve en español, máx 12 palabras"
+  }
+}
+
+Si ninguno tiene reconocimiento, retorna { "selectedIds": [], "reasons": {} }.
+```
+
+<Warning>
+  GPT output is **never used for pricing, URLs, or numeric scores**. The model only contributes the `reason` text and the selection of IDs. All deal data shown to users is sourced directly from CheapShark via the original `candidates` array.
+</Warning>

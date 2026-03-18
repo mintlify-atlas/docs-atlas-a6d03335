@@ -1,0 +1,147 @@
+---
+title: "CheapShark API"
+description: "Free public API used to fetch Steam game deals by price, discount, and deal rating."
+---
+
+## Overview
+
+[CheapShark](https://www.cheapshark.com) is a free, public price-tracking API that aggregates game deals across digital storefronts including Steam, GOG, Humble, and others. No API key or authentication is required.
+
+The bot queries CheapShark once per pipeline run to fetch a raw candidate pool of Steam deals, which then pass through the two-layer hybrid filter.
+
+**Base URL:** `https://www.cheapshark.com/api/1.0`
+
+**Authentication:** None
+
+**Timeout:** 10 seconds (`cheapsharkTimeoutMs`)
+
+---
+
+## Endpoint: GET /deals
+
+Fetches a paginated list of game deals sorted by deal rating.
+
+```
+GET https://www.cheapshark.com/api/1.0/deals
+```
+
+### Query parameters
+
+<ParamField path="storeID" type="string" required>
+  Storefront to query. Always `"1"` for Steam.
+</ParamField>
+
+<ParamField path="upperPrice" type="number" required>
+  Maximum sale price in USD. Controlled by the `MAX_PRICE_USD` environment variable (default: `60`).
+</ParamField>
+
+<ParamField path="sortBy" type="string" required>
+  Sort order for results. Always `"Deal Rating"` — CheapShark's composite deal quality score.
+</ParamField>
+
+<ParamField path="onSale" type="number" required>
+  Filter to only active sales. Always `1`.
+</ParamField>
+
+<ParamField path="pageSize" type="number" required>
+  Number of results to return. Controlled by `DEALS_PAGE_SIZE` (default: `60`, maximum: `60`).
+</ParamField>
+
+<Note>
+  Metacritic score is **not** filtered upstream in this request. The `rulesFilter` layer applies
+  Metacritic and Steam Rating thresholds using OR logic, which requires the full candidate universe
+  to be present before any score-based filtering.
+</Note>
+
+---
+
+## Sample response item
+
+The endpoint returns an array of deal objects. Each item has the following shape:
+
+```json
+{
+  "title": "Cyberpunk 2077",
+  "metacriticScore": "86",
+  "steamRatingText": "Very Positive",
+  "steamRatingPercent": "79",
+  "salePrice": "19.99",
+  "normalPrice": "59.99",
+  "savings": "66.661110",
+  "steamAppID": "1091500",
+  "dealID": "some_deal_id_hash",
+  "thumb": "https://cdn.cloudflare.steamstatic.com/steam/apps/1091500/capsule_sm_120.jpg"
+}
+```
+
+### Response fields
+
+<ResponseField name="title" type="string">
+  Display name of the game.
+</ResponseField>
+
+<ResponseField name="metacriticScore" type="string">
+  Metacritic review score as a numeric string (e.g. `"86"`). Empty string if no score exists.
+</ResponseField>
+
+<ResponseField name="steamRatingText" type="string">
+  Steam user review category label, e.g. `"Very Positive"`, `"Overwhelmingly Positive"`, `"Mixed"`.
+</ResponseField>
+
+<ResponseField name="steamRatingPercent" type="string">
+  Percentage of positive Steam reviews as a numeric string (e.g. `"79"`).
+</ResponseField>
+
+<ResponseField name="salePrice" type="string">
+  Current discounted price in USD (e.g. `"19.99"`).
+</ResponseField>
+
+<ResponseField name="normalPrice" type="string">
+  Original price in USD before the sale (e.g. `"59.99"`).
+</ResponseField>
+
+<ResponseField name="savings" type="string">
+  Discount percentage as a decimal string (e.g. `"66.661110"`). Parsed and rounded to an integer in `FilteredDeal.savingsPercent`.
+</ResponseField>
+
+<ResponseField name="steamAppID" type="string">
+  Steam application ID. Used as the canonical identifier throughout the pipeline.
+</ResponseField>
+
+<ResponseField name="dealID" type="string">
+  CheapShark deal hash. Used to construct the redirect URL.
+</ResponseField>
+
+<ResponseField name="thumb" type="string">
+  URL of the game's Steam capsule thumbnail image.
+</ResponseField>
+
+---
+
+## Deal redirect URLs
+
+Direct purchase links are constructed from the `dealID` field:
+
+```
+https://www.cheapshark.com/redirect?dealID={dealID}
+```
+
+This redirect sends the user to the game's current deal page on Steam. The redirect is stable for the lifetime of the deal.
+
+---
+
+## Implementation reference
+
+```typescript
+// src/services/cheapsharkClient.ts
+const { data } = await axios.get<Deal[]>(`${BASE_URL}/deals`, {
+  params: {
+    storeID: '1',
+    upperPrice: options.maxPrice,
+    sortBy: 'Deal Rating',
+    onSale: 1,
+    pageSize: options.pageSize,
+  },
+  timeout: config.http.cheapsharkTimeoutMs, // 10_000 ms
+});
+```

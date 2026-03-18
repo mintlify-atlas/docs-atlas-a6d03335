@@ -1,0 +1,67 @@
+---
+title: "Introduction"
+description: "Steam Deals AI is a Telegram bot that delivers daily curated Steam game deals using a two-layer hybrid filter."
+---
+
+## The problem
+
+Steam runs sales constantly. Hundreds of games go on discount every day, but the overwhelming majority are shovelware, asset flips, or titles with mixed reviews buried under a 90% discount badge. Sorting through the noise manually is tedious, and existing deal aggregators surface raw lists with no quality signal.
+
+Steam Deals AI solves this by combining hard deterministic rules with an AI curation step — so only deals that genuinely deserve your attention reach your Telegram chat.
+
+## How it works
+
+Deals pass through two sequential layers before they are ever sent to subscribers:
+
+**Layer 1 — Deterministic filter (no cost)**
+
+The bot fetches deals from the [CheapShark API](https://www.cheapshark.com/api) and immediately drops any deal that fails a configurable quality bar:
+
+| Rule | Default |
+|---|---|
+| Minimum discount | 50% |
+| Minimum Metacritic score | 70 |
+| Minimum Steam rating | 70% |
+| Maximum price after discount | $60 USD |
+
+This step is cheap and instant. It removes the long tail of low-quality discounts before any AI call is made.
+
+**Layer 2 — AI curation (GPT-4o-mini)**
+
+The deals that pass Layer 1 are sent as a batch to OpenAI GPT-4o-mini. The model scores each deal and keeps only AAA titles, award-winning indies, and trending games that represent genuine value. Each approved deal includes a short human-readable reason.
+
+<Note>
+  The AI is a second layer on top of the deterministic filter, not the sole judge. A deal must pass both layers to reach subscribers. This keeps AI costs low and prevents hallucinated recommendations for games that are simply cheap but low-quality.
+</Note>
+
+## Key technologies
+
+- **[Telegraf](https://telegraf.js.org/)** — TypeScript framework for the Telegram Bot API
+- **[OpenAI GPT-4o-mini](https://platform.openai.com/docs/models)** — AI curation layer
+- **[CheapShark API](https://www.cheapshark.com/api)** — Source of Steam deal data
+- **[node-cron](https://github.com/node-cron/node-cron)** — Daily scheduled broadcasts (default: 9:00 AM)
+
+## Prerequisites
+
+Before you start, make sure you have:
+
+- **Node.js >= 20** — the bot uses native ESM and modern TypeScript features
+- **Telegram bot token** — obtained from [@BotFather](https://t.me/BotFather) on Telegram
+- **OpenAI API key** — from [platform.openai.com](https://platform.openai.com/api-keys)
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get from zero to receiving your first curated deal list in minutes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand the two-layer pipeline, caching, and scheduling internals.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/environment-variables">
+    Tune filter thresholds, the cron schedule, and rate limits.
+  </Card>
+  <Card title="Commands" icon="terminal" href="/commands/overview">
+    Full reference for all bot commands available to subscribers.
+  </Card>
+</CardGroup>

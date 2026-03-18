@@ -1,0 +1,143 @@
+---
+title: "OpenAI API"
+description: "GPT-4o-mini integration for the AI curation layer that selects high-quality deals from rule-filtered candidates."
+---
+
+## Overview
+
+The AI filter is the second layer of the hybrid pipeline. After `rulesFilter` narrows the candidate pool using deterministic thresholds, `openaiFilter` sends those candidates to GPT-4o-mini for curation based on game reputation, community recognition, and cultural relevance.
+
+- **SDK:** `openai` npm package v4
+- **Endpoint:** `POST /v1/chat/completions`
+- **Model:** `gpt-4o-mini` (default, overridable via `OPENAI_MODEL`)
+- **Timeout:** 30 seconds (`openai.timeoutMs`)
+- **Temperature:** `0` — determinism ensures the same candidate set always produces the same selection, making hash-based caching reliable
+
+<Tip>
+  `gpt-4o-mini` is used deliberately for cost. The model is called at most once per day, and only
+  when the candidate hash changes — meaning no re-call if CheapShark returns the same deals.
+</Tip>
+
+---
+
+## API call structure
+
+```typescript
+const completion = await client.chat.completions.create(
+  {
+    model: config.openai.model,           // 'gpt-4o-mini'
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: JSON.stringify(input) },
+    ],
+    response_format: { type: 'json_object' }, // forces structured JSON output
+    temperature: 0,                           // deterministic for cache reliability
+  },
+  {
+    timeout: config.openai.timeoutMs,         // 30_000 ms
+  },
+);
+```
+
+---
+
+## Input shape
+
+Only the fields needed for quality judgment are sent to GPT. Prices, URLs, and thumbnails are excluded — GPT does not need them to evaluate game reputation.
+
+```typescript
+const input = deals.map((d) => ({
+  steamAppID: d.steamAppID,
+  title: d.title,
+  metacriticScore: parseInt(d.metacriticScore) || 0,
+  steamRatingPercent: parseInt(d.steamRatingPercent) || 0,
+  steamRatingText: d.steamRatingText,
+}));
+```
+
+### Input fields sent to GPT
+
+<ResponseField name="steamAppID" type="string">
+  Steam application ID. Used as the key for GPT's selection and reasons map.
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Game display name. The primary signal GPT uses to assess reputation.
+</ResponseField>
+
+<ResponseField name="metacriticScore" type="number">
+  Parsed integer Metacritic score. `0` if not available.
+</ResponseField>
+
+<ResponseField name="steamRatingPercent" type="number">
+  Parsed integer positive review percentage. `0` if not available.
+</ResponseField>
+
+<ResponseField name="steamRatingText" type="string">
+  Steam review category label (e.g. `"Very Positive"`, `"Overwhelmingly Positive"`).
+</ResponseField>
+
+---
+
+## Expected response shape
+
+GPT is instructed to respond exclusively with a JSON object (enforced via `response_format: { type: 'json_object' }`):
+
+```json
+{
+  "selectedIds": ["1091500", "413150"],
+  "reasons": {
+    "1091500": "RPG de mundo abierto con gran reconocimiento de la comunidad",
+    "413150": "Plataformero indie muy premiado y querido por la comunidad"
+  }
+}
+```
+
+<ResponseField name="selectedIds" type="string[]">
+  Array of `steamAppID` strings chosen by GPT. Only IDs that exist in the input candidates are accepted — unknown IDs are discarded during validation.
+</ResponseField>
+
+<ResponseField name="reasons" type="Record<string, string>">
+  Map of `steamAppID` to a brief curation reason in Spanish. GPT is prompted to keep reasons under 12 words, but the pipeline also enforces a hard truncation to `config.ai.maxReasonLength` (120 characters).
+</ResponseField>
+
+---
+
+## Response validation
+
+After receiving the raw response, `openaiFilter` validates and sanitizes before returning:
+
+1. `JSON.parse` the raw string
+2. Verify `selectedIds` is an array; default to `[]` if not
+3. Verify `reasons` is a plain object; default to `{}` if not
+4. Cross-reference each ID against the input set — any ID not in the original candidates is silently dropped
+5. Truncate each reason string to `config.ai.maxReasonLength` characters in `buildFilteredDeals`
+
+<Warning>
+  If GPT returns invalid JSON (e.g. due to a model error or content filter), `JSON.parse` throws
+  and `openaiFilter` catches it, returning `{ status: 'error', reason: '...' }`. The pipeline
+  propagates this as `PipelineResult { status: 'ai_error' }`, and the bot replies with a
+  user-facing error message instead of sending deals.
+</Warning>
+
+---
+
+## Curation criteria (system prompt)
+
+GPT is instructed to **select** games that meet at least one of:
+
+1. AAA titles from major studios (EA, Ubisoft, CD Projekt, Rockstar, Bethesda, etc.)
+2. AA games from mid-size studios with a recognizable track record
+3. Highly acclaimed or award-winning indie games (Hades, Hollow Knight, Celeste, Stardew Valley, etc.)
+4. Lesser-known indies with extremely positive reviews or very strong reputation
+5. Games that were trending or viral in the last 5 years
+6. Known franchises, including minor entries
+7. Niche games with loyal communities and strong reputation on Reddit, YouTube, Twitch, or specialized forums
+
+GPT is instructed to **discard**:
+
+- Completely unknown games with no clear recognition or community
+- Asset flips or generic simulators without a community
+- DLCs of unrecognized games
+
+The target selection size is 8–10 games when enough strong candidates exist, with a hard cap of 10.

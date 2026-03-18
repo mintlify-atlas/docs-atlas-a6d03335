@@ -1,0 +1,127 @@
+---
+title: "Telegram Bot API"
+description: "Telegraf v4 integration for delivering daily deal notifications and handling bot commands."
+---
+
+## Overview
+
+The bot uses [Telegraf v4](https://telegraf.js.org) as the framework layer over the Telegram Bot API. Telegraf handles command routing, context injection, and the long-polling connection.
+
+- **Framework:** Telegraf v4
+- **Transport:** Long polling (no webhook, no inbound port required)
+- **Authentication:** Bot token from [@BotFather](https://t.me/BotFather), provided via `BOT_TOKEN` environment variable
+- **Message timeout:** 15 seconds per send (`telegramTimeoutMs`)
+
+<Note>
+  Users must send `/start` before the bot can send them messages. Telegram blocks bots from
+  initiating conversations with users who have never messaged them.
+</Note>
+
+---
+
+## Bot instance patterns
+
+### Creating the bot
+
+```typescript
+import { Telegraf } from 'telegraf';
+
+const bot = new Telegraf(botToken);
+```
+
+### Registering command handlers
+
+```typescript
+// /start — subscribe user and send welcome message
+bot.start(async (ctx) => {
+  saveChatId(ctx.chat.id);
+  await ctx.reply('...');
+});
+
+// /deals — fetch and display current deals
+bot.command('deals', async (ctx) => {
+  await ctx.sendChatAction('typing');
+  // ...
+  await ctx.reply(message, { parse_mode: 'HTML' });
+});
+```
+
+### Sending replies from command handlers
+
+```typescript
+// Plain reply
+await ctx.reply(text);
+
+// HTML-formatted reply
+await ctx.reply(text, { parse_mode: 'HTML' });
+
+// Typing indicator (shown while fetching deals)
+await ctx.sendChatAction('typing');
+```
+
+<Tip>
+  `parse_mode: 'HTML'` is used instead of Markdown throughout the codebase. Game titles frequently
+  contain characters like `_` and `[` that silently break Telegram's Markdown parser. HTML tags
+  (`<b>`, `<a>`) are unambiguous and safe.
+</Tip>
+
+### Programmatic send (notifier)
+
+The daily broadcast uses `Telegram` directly instead of going through a bot context, since there is no incoming message to reply to:
+
+```typescript
+import { Telegram } from 'telegraf';
+
+const telegram = new Telegram(config.telegram.botToken);
+
+await telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+```
+
+Each send is wrapped in a `Promise.race` with a 15-second timeout to prevent a hung Telegram connection from blocking the entire broadcast loop.
+
+---
+
+## Registered commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Subscribe to daily notifications. Saves chat ID and sends welcome message. |
+| `/deals` | Fetch and display the current curated deal list on demand. Rate-limited to once per 45 seconds per chat. |
+| `/stop` | Unsubscribe from daily notifications. Removes the chat ID from the subscriber list. |
+| `/help` | Display the command list and bot description. |
+
+---
+
+## Broadcast error handling
+
+During the daily broadcast, the notifier checks each send error to determine whether the chat ID should be permanently removed:
+
+| Error code | Description | Action |
+|------------|-------------|--------|
+| `403` | Bot was blocked by the user | Remove chat ID |
+| `400` + `"chat not found"` | Chat was deleted or the ID is invalid | Remove chat ID |
+| Any other error | Transient failure (network, rate limit, etc.) | Log and continue, keep chat ID |
+
+Chat IDs that trigger permanent errors are collected and removed in a single batch write after the broadcast completes.
+
+```typescript
+function isPermanentError(err: unknown): boolean {
+  const code = (err as any)?.response?.error_code;
+  const desc: string = (err as any)?.response?.description ?? '';
+  return code === 403 || (code === 400 && desc.toLowerCase().includes('chat not found'));
+}
+```
+
+---
+
+## Chat ID persistence
+
+Subscriber chat IDs are stored in `data/chat_ids.json` as a flat JSON array of integers. Reads and writes go through `write-file-atomic` to prevent corruption from concurrent writes or process crashes.
+
+```typescript
+// Save on /start
+saveChatId(ctx.chat.id);
+
+// Remove on /stop or permanent error
+removeChatId(chatId);
+```

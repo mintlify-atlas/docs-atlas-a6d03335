@@ -1,0 +1,99 @@
+---
+title: "RulesFilter"
+description: "Deterministic Layer 1 filter that rejects deals based on price, discount, quality scores, and deduplication."
+---
+
+## Overview
+
+`src/services/rulesFilter.ts` implements the first layer of the hybrid filter pipeline. It is a **pure function** — no I/O, no side effects, and no external calls. All state required for deduplication is injected by the caller (`dealsService.ts`).
+
+## Exported function
+
+### `applyHardFilters`
+
+```typescript
+export function applyHardFilters(
+  deals: Deal[],
+  options: RulesFilterOptions,
+  notifiedIds: Set<string>,
+): Deal[]
+```
+
+Filters a raw list of `Deal` objects returned by CheapShark against a set of hard thresholds and a deduplication set.
+
+<ParamField path="deals" type="Deal[]" required>
+  Raw deals fetched from the CheapShark API.
+</ParamField>
+
+<ParamField path="options" type="RulesFilterOptions" required>
+  Threshold values for each filter criterion. See the interface section below.
+</ParamField>
+
+<ParamField path="notifiedIds" type="Set<string>" required>
+  Set of `steamAppID` strings already notified within the deduplication window. Built by `dealsService` using `getNotifiedIds()` and injected here to keep this module side-effect-free.
+</ParamField>
+
+## `RulesFilterOptions` interface
+
+<ParamField path="minDiscountPercent" type="number" required>
+  Minimum required savings percentage. Deals with `savings < minDiscountPercent` are rejected.
+</ParamField>
+
+<ParamField path="minMetacriticScore" type="number" required>
+  Minimum Metacritic score for the quality gate. Used in the OR condition together with `minSteamRatingPercent`.
+</ParamField>
+
+<ParamField path="minSteamRatingPercent" type="number" required>
+  Minimum Steam user rating percentage for the quality gate. A deal passes if `steamRatingPercent >= minSteamRatingPercent` even if it has no Metacritic score.
+</ParamField>
+
+<ParamField path="maxPriceUSD" type="number" required>
+  Maximum sale price in USD. Deals with `salePrice > maxPriceUSD` are rejected regardless of discount or quality.
+</ParamField>
+
+## Filter logic
+
+Each deal is evaluated against two categories of criteria:
+
+**Rejection criteria** — any one of these causes the deal to be dropped:
+
+- `savings < minDiscountPercent`
+- `salePrice > maxPriceUSD`
+- `steamAppID` is present in `notifiedIds` (deduplication)
+
+**Quality gate** — deal must pass at least one of:
+
+- `metacriticScore >= minMetacriticScore` (only evaluated when a non-zero score is present)
+- `steamRatingPercent >= minSteamRatingPercent`
+
+The quality gate uses an OR condition so games without a Metacritic score can still pass on Steam community ratings alone.
+
+## Source code
+
+```typescript
+export function applyHardFilters(
+  deals: Deal[],
+  options: RulesFilterOptions,
+  notifiedIds: Set<string>,
+): Deal[] {
+  return deals.filter((deal) => {
+    const savings = parseFloat(deal.savings);
+    const salePrice = parseFloat(deal.salePrice);
+    const metacritic = parseInt(deal.metacriticScore) || 0;
+    const steamRating = parseInt(deal.steamRatingPercent) || 0;
+
+    if (savings < options.minDiscountPercent) return false;
+    if (salePrice > options.maxPriceUSD) return false;
+    if (notifiedIds.has(deal.steamAppID)) return false;
+
+    const hasGoodMetacritic = metacritic > 0 && metacritic >= options.minMetacriticScore;
+    const hasGoodSteamRating = steamRating >= options.minSteamRatingPercent;
+
+    return hasGoodMetacritic || hasGoodSteamRating;
+  });
+}
+```
+
+<Tip>
+  This module is intentionally pure — no disk access, no network calls, no global state. The deduplication set is constructed by `dealsService` and injected as a `Set<string>`, keeping `rulesFilter` independently testable with zero mocking.
+</Tip>

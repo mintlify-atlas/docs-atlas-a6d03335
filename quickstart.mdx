@@ -1,80 +1,141 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Go from zero to receiving your first curated Steam deal list in Telegram."
 ---
 
-## Get started in three steps
+<Steps>
+  <Step title="Create a Telegram bot via @BotFather">
+    Open Telegram and start a conversation with [@BotFather](https://t.me/BotFather).
 
-Get your documentation site running locally and make your first customization.
+    ```
+    /newbot
+    ```
 
-### Step 1: Set up your local environment
+    Follow the prompts to choose a name and username for your bot. BotFather will return a **BOT_TOKEN** that looks like:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```
+    123456789:AbCdefGhIJKlmNoPQRsTUVwxyZ
+    ```
 
-### Step 2: Deploy your changes
+    Keep this token — you will need it in a later step.
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+  <Step title="Get an OpenAI API key">
+    Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and create a new secret key.
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    The bot uses `gpt-4o-mini` by default. This model is the most cost-efficient option and is more than sufficient for deal curation. Make sure your account has credits or a payment method attached.
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/your-org/steam-deals-bot.git
+    cd steam-deals-bot
+    ```
+  </Step>
 
-### Step 3: Go live
+  <Step title="Configure environment variables">
+    Copy the example file and fill in your credentials:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```bash
+    cp .env.example .env
+    ```
 
-## Next steps
+    The `.env.example` file contains:
 
-Now that you have your docs running, explore these key features:
+    ```bash
+    # Telegram Bot Token (obtenido de @BotFather en Telegram)
+    BOT_TOKEN=123456789:AbCdefGhIJKlmNoPQRsTUVwxyZ
 
-<CardGroup cols={2}>
+    # OpenAI API Key (plataforma OpenAI)
+    OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxx
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+    # Modelo a usar (gpt-4o-mini es el más económico y suficiente)
+    OPENAI_MODEL=gpt-4o-mini
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+    # ─── Filtros CAPA 1 (deterministas, sin costo) ─────────────
+    MIN_DISCOUNT_PERCENT=50        # Descuento mínimo requerido (%)
+    MIN_METACRITIC_SCORE=70        # Score mínimo de Metacritic (0 = ignorar)
+    MIN_STEAM_RATING_PERCENT=70    # Steam rating % mínimo
+    MAX_PRICE_USD=60               # Precio máximo tras descuento
+    DEALS_PAGE_SIZE=60             # Cuántos deals traer de CheapShark (máx 60)
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+    # ─── Deduplicación ─────────────────────────────────────────
+    DEDUP_DAYS=7                   # No repetir un juego por N días
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+    # ─── Scheduler ─────────────────────────────────────────────
+    # Formato cron estándar. Ver https://crontab.guru
+    CRON_SCHEDULE=0 9 * * *        # Todos los días a las 9:00am (Colombia UTC-5)
+    ```
 
-</CardGroup>
+    At minimum, set these two required variables in your `.env`:
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+    | Variable | Required | Default | Description |
+    |---|---|---|---|
+    | `BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
+    | `OPENAI_API_KEY` | Yes | — | OpenAI API key |
+    | `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model to use for curation |
+
+    All other variables are optional and have sensible defaults.
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+  </Step>
+
+  <Step title="Start the bot in development mode">
+    The available npm scripts are:
+
+    ```json
+    "dev":        "tsx watch src/bot/index.ts",
+    "build":      "tsc",
+    "start":      "node dist/bot/index.js",
+    "test:deals": "tsx src/scripts/testDeals.ts"
+    ```
+
+    Run the bot with hot-reload using:
+
+    ```bash
+    npm run dev
+    ```
+
+    You should see:
+
+    ```
+    🚀 Steam Deals Bot iniciado correctamente
+    ```
+  </Step>
+
+  <Step title="Send /start to your bot">
+    Open Telegram, search for the username you gave your bot in Step 1, and send:
+
+    ```
+    /start
+    ```
+
+    The bot will confirm that you are now subscribed to daily deal notifications.
+  </Step>
+
+  <Step title="Send /deals to get your first deal list">
+    ```
+    /deals
+    ```
+
+    The bot fetches live deals from CheapShark, runs them through the deterministic filter, sends the survivors to GPT-4o-mini for curation, and replies with a formatted list of the best deals — each with a short AI-generated reason.
+
+    <Note>
+      There is a 45-second cooldown between `/deals` requests per chat to prevent abuse. If you send the command again too quickly, the bot will tell you how many seconds remain.
+    </Note>
+  </Step>
+</Steps>
+
+<Tip>
+  You can test the full deals pipeline — both filter layers — without running the bot server by using:
+
+  ```bash
+  npm run test:deals
+  ```
+
+  This runs `src/scripts/testDeals.ts` directly and prints results to the terminal. It is the fastest way to validate your API keys and tweak filter thresholds before deploying.
+</Tip>

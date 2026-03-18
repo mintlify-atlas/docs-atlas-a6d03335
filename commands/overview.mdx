@@ -1,0 +1,101 @@
+---
+title: "Bot commands"
+description: "All available Telegram commands, their behavior, and rate limits."
+---
+
+The bot exposes four commands. Any Telegram user can interact with them directly in the chat.
+
+## Command summary
+
+| Command | Description | Rate limit |
+| ------- | ----------- | ---------- |
+| `/start` | Subscribe to daily deal notifications | None |
+| `/deals` | Fetch and display today's curated deals | 45 seconds per chat |
+| `/stop` | Unsubscribe from daily notifications | None |
+| `/help` | Show available commands and bot description | None |
+
+---
+
+## `/start`
+
+Subscribes the user to daily deal broadcasts. On success, the bot saves the user's `chat_id` to `data/chat_ids.json` and replies with a welcome message listing all available commands.
+
+Sending `/start` again while already subscribed is safe — the file write is idempotent.
+
+<Note>
+  The `chat_id` saved by `/start` is the identifier used by the daily cron job to push deals to all subscribers. If `data/chat_ids.json` is lost, all users must re-run `/start` to re-subscribe.
+</Note>
+
+---
+
+## `/deals`
+
+Fetches and displays the current day's curated deals on demand.
+
+**Behavior:**
+
+1. Checks an in-memory rate limit for the requesting `chat_id`. If the last request was within the cooldown window, the bot replies with the remaining wait time and exits early.
+2. Sends a `typing` chat action so the user sees a typing indicator while the pipeline runs.
+3. Calls `fetchDeals()`, which returns a snapshot if one already exists for today, or runs the full two-layer pipeline (deterministic filter → GPT-4o-mini curation).
+4. Fetches the current USD → COP exchange rate and formats the deals message in HTML.
+5. Replies with the formatted deals list.
+
+**Rate limit:** 45 seconds between invocations per `chat_id`. The cooldown is stored in memory and resets when the process restarts.
+
+<Note>
+  If the daily cron job has already run, `/deals` serves from the cached `data/snapshot.json` and responds almost instantly — no API calls are made. The snapshot is cleared at startup if it belongs to a previous day.
+</Note>
+
+**Error states:**
+
+| Condition | User-facing message |
+| --------- | ------------------- |
+| Rate limit active | `⏳ Espera Ns antes de volver a consultar ofertas.` |
+| AI curation unavailable | `⚠️ El servicio de curación con IA no está disponible ahora mismo.` |
+| No qualifying deals | `🎮 No hay ofertas destacadas en este momento. ¡Vuelve mañana!` |
+| Unexpected error | `❌ Hubo un error inesperado. Intenta más tarde.` |
+
+**Example formatted message:**
+
+Deals are rendered as an HTML message with the following structure per entry:
+
+```
+🎮 Ofertas Steam Destacadas
+📅 miércoles, 18 de marzo
+5 juegos seleccionados por IA
+
+1. Hollow Knight
+💰 ~~COP $37.400~~ → COP $9.350 (USD $2.24) (75% OFF)
+📊 Metacritic: 87
+💡 Critically acclaimed Metroidvania with 40+ hours of content.
+🛒 Ver oferta en Steam
+
+────────────────────
+
+2. Deep Rock Galactic
+...
+```
+
+The exact HTML sent to Telegram:
+
+```html
+<b>1. Hollow Knight</b>
+💰 <s>COP $37.400</s> → <b>COP $9.350</b> (USD $2.24) (75% OFF)
+📊 Metacritic: <b>87</b>
+💡 <i>Critically acclaimed Metroidvania with 40+ hours of content.</i>
+<a href="https://store.steampowered.com/app/367520">🛒 Ver oferta en Steam</a>
+```
+
+---
+
+## `/stop`
+
+Unsubscribes the user from daily notifications. The bot removes their `chat_id` from `data/chat_ids.json` immediately and confirms with a reply.
+
+The user can re-subscribe at any time by sending `/start`.
+
+---
+
+## `/help`
+
+Replies with a short description of the bot and a list of all available commands. No side effects.

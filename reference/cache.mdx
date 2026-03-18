@@ -1,0 +1,127 @@
+---
+title: "Cache modules"
+description: "Snapshot cache and deduplication log — the two persistence layers that prevent redundant API calls and repeated deal notifications."
+---
+
+## Overview
+
+Two modules in `src/cache/` provide the persistence layer for the bot:
+
+- **`snapshotCache.ts`** — stores the last successful AI-curated deal list for the current calendar day. Allows `/deals` requests and repeated cron ticks to be served from disk without re-calling CheapShark or GPT.
+- **`deduplication.ts`** — records which games have been notified recently so they are not broadcast again within the configured deduplication window.
+
+Both modules write to the `data/` directory and use `write-file-atomic` for crash-safe persistence.
+
+---
+
+## SnapshotCache
+
+**File:** `src/cache/snapshotCache.ts`  
+**Data file:** `data/snapshot.json`
+
+### `loadSnapshot`
+
+```typescript
+export function loadSnapshot(): DailySnapshot | null
+```
+
+Reads `data/snapshot.json` and returns the parsed `DailySnapshot`, or `null` if the file does not exist or cannot be parsed.
+
+### `saveSnapshot`
+
+```typescript
+export function saveSnapshot(snapshot: DailySnapshot): void
+```
+
+Writes the snapshot to `data/snapshot.json` using an atomic write. Creates the `data/` directory if it does not exist.
+
+<ParamField path="snapshot" type="DailySnapshot" required>
+  The snapshot to persist. Contains `deals`, `candidatesHash`, and `createdAt` (ISO string).
+</ParamField>
+
+### `isSnapshotFresh`
+
+```typescript
+export function isSnapshotFresh(snapshot: DailySnapshot): boolean
+```
+
+Returns `true` if the snapshot's `createdAt` date matches today's date in the `America/Bogota` timezone.
+
+```typescript
+export function isSnapshotFresh(snapshot: DailySnapshot): boolean {
+  const tz = 'America/Bogota';
+  const opts: Intl.DateTimeFormatOptions = {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  };
+  const snapshotDay = new Intl.DateTimeFormat('en-CA', opts).format(new Date(snapshot.createdAt));
+  const todayDay = new Intl.DateTimeFormat('en-CA', opts).format(new Date());
+  return snapshotDay === todayDay;
+}
+```
+
+The timezone is explicit because the cron also runs in `America/Bogota`. Using the server's local time would cause incorrect freshness checks when the host is in a different timezone.
+
+### `clearStaleSnapshot`
+
+```typescript
+export function clearStaleSnapshot(): void
+```
+
+Deletes `data/snapshot.json` if it exists and is not from today. Called once at process startup to prevent the bot from serving stale deal data after downtime spanning midnight.
+
+### `hashCandidates`
+
+```typescript
+export function hashCandidates(candidates: {
+  steamAppID: string;
+  title: string;
+  metacriticScore: string;
+  steamRatingText: string;
+  salePrice: string;
+  normalPrice: string;
+  savings: string;
+  dealID: string;
+}[]): string
+```
+
+Computes a deterministic SHA-256 hash of the candidate list and returns the first 16 hex characters. Candidates are sorted by `steamAppID` before hashing to ensure the result is independent of the order returned by CheapShark.
+
+The hash covers both the fields GPT uses to decide (`title`, `metacriticScore`, `steamRatingText`) and the fields visible to users (`salePrice`, `normalPrice`, `savings`, `dealID`). If any of these change — even if the same game is still on sale — the hash differs and GPT is re-consulted.
+
+---
+
+## Deduplication
+
+**File:** `src/cache/deduplication.ts`  
+**Data file:** `data/notified_games.json`
+
+### `getNotifiedIds`
+
+```typescript
+export function getNotifiedIds(): Set<string>
+```
+
+Reads `data/notified_games.json` and returns a `Set<string>` of `steamAppID` values that were notified within the last `config.dedup.days` days. Entries older than the cutoff are excluded from the returned set (but not yet removed from disk — cleanup happens in `markAsNotified`).
+
+`dealsService` calls this once per pipeline run and passes the result to `applyHardFilters`, keeping the rules filter module free of any I/O.
+
+### `markAsNotified`
+
+```typescript
+export function markAsNotified(games: { steamAppID: string }[]): void
+```
+
+Records a list of games as notified at the current timestamp. Also cleans up expired entries in the same write:
+
+1. Loads the existing log.
+2. Removes entries older than the deduplication window.
+3. Appends new entries for games not already present in the cleaned list.
+4. Writes the result atomically.
+
+<ParamField path="games" type="{ steamAppID: string }[]" required>
+  Games to mark as notified. Only `steamAppID` is required — titles are intentionally not stored.
+</ParamField>
+
+<Note>
+  `data/notified_games.json` stores only `steamAppID` and `notifiedAt` (ISO timestamp). Game titles are **not** persisted — they are not needed for deduplication and omitting them keeps the file compact and avoids storing display data that may change.
+</Note>

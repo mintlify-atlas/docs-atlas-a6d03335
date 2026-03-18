@@ -1,0 +1,174 @@
+---
+title: "Architecture"
+description: "How the Steam Deals AI bot is structured: components, data flows, and the two-layer filtering approach."
+---
+
+Steam Deals AI is a Telegram bot that runs a daily curation pipeline. Raw deals from CheapShark pass through a deterministic rules filter (Layer 1), then through GPT-4o-mini (Layer 2), before being broadcast to subscribers or served on demand.
+
+## System diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Telegram Client                     │
+└───────────────────┬─────────────────────────────────────┘
+                    │  commands / webhooks
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│                     Bot Core (Telegraf)                 │
+│  ┌──────────────────┐    ┌──────────────────────────┐   │
+│  │  CronJob Scheduler│    │    Commands Handler       │   │
+│  │  (node-cron)      │    │  /start  /deals  /help   │   │
+│  └────────┬─────────┘    └───────────┬──────────────┘   │
+│           │                          │                   │
+│           ▼                          ▼                   │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │           DealsService  (Orchestrator)           │    │
+│  │                                                  │    │
+│  │  fetchSteamDeals()  ──►  applyHardFilters()      │    │
+│  │       (CheapShark)          (Layer 1 Rules)      │    │
+│  │                                  │               │    │
+│  │                                  ▼               │    │
+│  │                       hashCandidates()           │    │
+│  │                          │            │          │    │
+│  │                    hash miss      hash hit       │    │
+│  │                          │            │          │    │
+│  │                          ▼            ▼          │    │
+│  │                  filterDealsWithAI() snapshot    │    │
+│  │                    (Layer 2 GPT)   reused        │    │
+│  │                          │                       │    │
+│  │                          ▼                       │    │
+│  │                  buildFilteredDeals()            │    │
+│  │                          │                       │    │
+│  │                          ▼                       │    │
+│  │                   saveSnapshot()                 │    │
+│  └─────────────────────────────────────────────────┘    │
+│           │                          │                   │
+│           ▼                          ▼                   │
+│  ┌─────────────────┐      ┌─────────────────────────┐   │
+│  │ Notifier Service│      │     /deals response      │   │
+│  │ markAsNotified()│      │   (read-only, no dedup)  │   │
+│  └─────────────────┘      └─────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+│                                                         │
+▼                                                         ▼
+┌───────────────────┐              ┌──────────────────────┐
+│   data/snapshot   │              │ data/notified_games  │
+│      .json        │              │        .json         │
+└───────────────────┘              └──────────────────────┘
+```
+
+## Components
+
+### Bot Core (Telegraf)
+
+The entry point. Initializes the Telegraf instance, registers command handlers, starts the cron job, and calls `clearStaleSnapshot()` at startup to prevent serving deals from a previous day.
+
+### CronJob Scheduler
+
+Runs on a configurable cron expression (default: `0 9 * * *` — 9 AM Colombia time). Calls `fetchAndMarkDeals()`, which runs the full pipeline **and** records notified game IDs to prevent re-broadcasting the same game within `DEDUP_DAYS` days.
+
+### Commands Handler
+
+Handles `/start`, `/deals`, and `/help`. The `/deals` command calls `fetchDeals()`, which is **read-only** — it never writes to the deduplication log. A per-chat-ID rate limit (default 45 s) prevents spam.
+
+### Notifier Service
+
+Broadcasts `FilteredDeal[]` to all registered Telegram chat IDs. Introduces a configurable delay between sends to respect Telegram's rate limits.
+
+### DealsService (Orchestrator)
+
+The central coordinator (`dealsService.ts`). Owns the in-memory pipeline lock that prevents concurrent executions from racing on the JSON files. Exposes two public functions:
+
+| Function | Used by | Side effects |
+|---|---|---|
+| `fetchDeals()` | `/deals` command | None — read-only |
+| `fetchAndMarkDeals()` | Cron broadcast | Writes to `notified_games.json` |
+
+### Layer 1 — Rules Filter
+
+Pure, synchronous function. No I/O. Applies hard thresholds for discount, price, and quality scores, then removes already-notified games. See [Filter pipeline](/concepts/filter-pipeline).
+
+### Layer 2 — AI Filter (GPT-4o-mini)
+
+Receives candidates that passed Layer 1. GPT selects up to 10 games and returns one short reason per selection. All price and URL data comes from CheapShark, not from the model. See [AI curation](/concepts/ai-curation).
+
+### Cache System
+
+Two JSON files under `data/`:
+
+- **`snapshot.json`** — the last successful `FilteredDeal[]` plus a candidate hash and timestamp.
+- **`notified_games.json`** — deduplication log with `steamAppID` + `notifiedAt` per game.
+
+See [Caching and deduplication](/concepts/caching).
+
+## Data flows
+
+<Tabs>
+  <Tab title="Cron broadcast path">
+    <Steps>
+      <Step title="Scheduler fires">
+        The cron job triggers `fetchAndMarkDeals()` at the configured schedule (default 9 AM Bogotá).
+      </Step>
+      <Step title="Snapshot check">
+        If a fresh snapshot already exists for today (same calendar day in `America/Bogota`), it is returned immediately without re-running the pipeline.
+      </Step>
+      <Step title="Fetch raw deals">
+        `fetchSteamDeals()` calls CheapShark with `maxPrice` and `pageSize` filters. The Metacritic threshold is intentionally **not** passed upstream — see [Filter pipeline](/concepts/filter-pipeline).
+      </Step>
+      <Step title="Layer 1: rules filter">
+        `applyHardFilters()` removes deals that are under-discounted, over-priced, or already notified.
+      </Step>
+      <Step title="Hash check">
+        `hashCandidates()` produces a 16-character SHA-256 digest of the candidate set. If it matches the stored snapshot hash, GPT is skipped and the cached selection is reused.
+      </Step>
+      <Step title="Layer 2: AI curation">
+        `filterDealsWithAI()` sends candidates to GPT-4o-mini. Only IDs, titles, and rating scores are sent — not prices or URLs.
+      </Step>
+      <Step title="Reconstruct and persist">
+        `buildFilteredDeals()` assembles `FilteredDeal[]` from the original CheapShark data using GPT's selected IDs. The snapshot is saved to disk.
+      </Step>
+      <Step title="Broadcast and mark">
+        The Notifier Service sends each deal to all subscribers. `markAsNotified()` records the game IDs to prevent future re-broadcasts.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="/deals command path">
+    <Steps>
+      <Step title="Command received">
+        A user sends `/deals`. The rate limiter checks the per-chat cooldown (default 45 s).
+      </Step>
+      <Step title="Snapshot check">
+        `fetchDeals()` checks for a fresh snapshot. If one exists, it is returned instantly — no API calls, no GPT.
+      </Step>
+      <Step title="Pipeline runs (if needed)">
+        If there is no fresh snapshot, the full pipeline runs (same steps 3–7 as the cron path), but **without** calling `markAsNotified()`. The user gets results without affecting the deduplication log.
+      </Step>
+      <Step title="Response sent">
+        The bot formats the `FilteredDeal[]` and sends it to the requesting chat.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## When is GPT called?
+
+| Scenario | GPT called? |
+|---|---|
+| First run of the day, no snapshot | Yes |
+| Candidates changed since last snapshot | Yes |
+| `/deals` requested, fresh snapshot exists | No — snapshot served |
+| Cron fires, same candidates as last snapshot | No — hash matched |
+| GPT call fails, fresh snapshot exists | No — snapshot used as fallback |
+| GPT call fails, no fresh snapshot | Error returned (`ai_error`) |
+
+<CardGroup cols={2}>
+  <Card title="Filter pipeline" icon="filter" href="/concepts/filter-pipeline">
+    How Layer 1 deterministic rules work, including the OR quality logic and rejection criteria.
+  </Card>
+  <Card title="AI curation" icon="sparkles" href="/concepts/ai-curation">
+    How GPT-4o-mini selects from candidates and what it contributes to the final deal.
+  </Card>
+  <Card title="Caching and deduplication" icon="database" href="/concepts/caching">
+    Snapshot freshness, candidate hash caching, and the deduplication log.
+  </Card>
+</CardGroup>

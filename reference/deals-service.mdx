@@ -1,0 +1,134 @@
+---
+title: "DealsService"
+description: "Orchestrates the full deals pipeline: fetch, filter, AI curation, snapshot caching, and deduplication."
+---
+
+## Overview
+
+`src/services/dealsService.ts` is the central coordinator of the two-layer hybrid filter pipeline. It exposes two public functions — one for read-only queries and one used by the cron job that also records results into the deduplication log.
+
+## Exported functions
+
+### `fetchDeals`
+
+```typescript
+export async function fetchDeals(): Promise<PipelineResult>
+```
+
+Query-only. No side effects on deduplication.
+
+If a fresh snapshot already exists for today (evaluated in the `America/Bogota` timezone), it is returned immediately without hitting any external API. Otherwise the full pipeline runs via `runPipeline()`.
+
+### `fetchAndMarkDeals`
+
+```typescript
+export async function fetchAndMarkDeals(): Promise<PipelineResult>
+```
+
+Runs the full pipeline **and** marks the resulting deals as notified by calling `markAsNotified()`. Used exclusively by the cron job so that games broadcast today are suppressed in future runs within the deduplication window.
+
+Returns the same `PipelineResult` union it receives from `runPipeline()` so the cron can handle each status appropriately.
+
+## Return type — `PipelineResult`
+
+<ResponseField name="status" type="'ok' | 'no_deals' | 'ai_error'" required>
+  Discriminant field of the union.
+</ResponseField>
+
+<ResponseField name="deals" type="FilteredDeal[]">
+  Present only when `status === 'ok'`. The curated list of deals ready for broadcast.
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Present only when `status === 'ai_error'`. A short description of why the AI layer failed.
+</ResponseField>
+
+## Pipeline lock — `pipelineRunning`
+
+A module-level boolean flag prevents concurrent pipeline executions:
+
+```typescript
+let pipelineRunning = false;
+```
+
+If `runPipeline()` is called while a run is already in progress (e.g., a `/deals` command arrives during a cron execution), the second caller immediately returns the current snapshot if it is fresh, or `{ status: 'no_deals' }` otherwise. This prevents:
+
+- Duplicate calls to the CheapShark API and GPT
+- Race conditions on the JSON data files
+
+The flag resets when the process exits — acceptable for a single-process deployment.
+
+## Pipeline implementation — `_runPipelineImpl`
+
+```typescript
+async function _runPipelineImpl(): Promise<PipelineResult>
+```
+
+The internal implementation runs the following steps:
+
+**Step 1 — Fetch raw deals from CheapShark**
+
+```typescript
+const rawDeals = await fetchSteamDeals({
+  maxPrice: opts.maxPriceUSD,
+  pageSize: opts.pageSize,
+});
+```
+
+No Metacritic filter is applied upstream; the rules layer uses an OR condition so upstream filtering would be incorrect.
+
+**Step 2 — Apply deterministic rules filter**
+
+```typescript
+const notifiedIds = getNotifiedIds();
+const candidates = applyHardFilters(rawDeals, opts, notifiedIds);
+```
+
+The notified-IDs set is resolved here and injected into `applyHardFilters` so that module remains pure (no I/O). If `candidates` is empty, returns `{ status: 'no_deals' }` immediately.
+
+**Step 3 — Hash candidates for cache**
+
+```typescript
+const currentHash = hashCandidates(
+  candidates.map((d) => ({
+    steamAppID: d.steamAppID,
+    title: d.title,
+    metacriticScore: d.metacriticScore,
+    steamRatingText: d.steamRatingText,
+    salePrice: d.salePrice,
+    normalPrice: d.normalPrice,
+    savings: d.savings,
+    dealID: d.dealID,
+  })),
+);
+```
+
+If the hash matches the stored snapshot, the pipeline returns the existing snapshot without calling GPT.
+
+**Step 4 — AI curation (GPT-4o-mini)**
+
+```typescript
+const aiResult = await filterDealsWithAI(candidates);
+```
+
+If AI returns an error, a fresh same-day snapshot is used as a fallback (see note below). If no fresh snapshot is available, `{ status: 'ai_error', reason }` is returned.
+
+**Step 5 — Reconstruct FilteredDeal list**
+
+```typescript
+const deals = buildFilteredDeals(candidates, aiResult.selection);
+```
+
+Prices, URLs, and scores always come from the original candidates — never from GPT output.
+
+**Step 6 — Persist snapshot**
+
+```typescript
+saveSnapshot({ deals, candidatesHash: currentHash, createdAt: new Date().toISOString() });
+```
+
+The snapshot is saved for reuse by subsequent calls during the same calendar day.
+
+<Note>
+  When the AI layer fails but a fresh same-day snapshot exists, the pipeline returns `{ status: 'ok', deals: snapshot.deals }` as a fallback. A snapshot from a previous day is **not** used as a fallback because prices and deal URLs may have already changed.
+</Note>

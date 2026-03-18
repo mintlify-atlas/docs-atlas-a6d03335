@@ -1,0 +1,66 @@
+---
+title: "Scheduler"
+description: "Registers the daily cron job that runs the deals pipeline and broadcasts results to all subscribers."
+---
+
+## Overview
+
+`src/scheduler/cronJobs.ts` registers a single `node-cron` job that drives the bot's daily broadcast. The schedule expression is read from `config.cron.schedule`, but the timezone is hardcoded to `America/Bogota` in the `cron.schedule` call.
+
+## Exported function
+
+### `startScheduler`
+
+```typescript
+export function startScheduler(): void
+```
+
+Registers the cron job. Called once at application startup. Logs the active schedule expression on registration.
+
+## Cron job behavior
+
+On each scheduled tick the job:
+
+1. **Runs the full pipeline** by calling `fetchAndMarkDeals()`. This fetches deals, applies both filter layers, saves a snapshot, and marks results as notified.
+2. **On `ai_error`** — logs the failure reason and returns without sending any message. Sending a "no deals today" message when the AI actually failed would be misleading to subscribers.
+3. **On `no_deals`** — logs that no deals passed the filters and returns silently. This is a normal condition, not an error.
+4. **On `ok`** — fetches the current COP exchange rate, formats the deals message, and calls `notifyAllUsers()` to broadcast to all subscribers.
+
+## Source code
+
+```typescript
+export function startScheduler(): void {
+  console.log(`⏰ Cron activado con schedule: "${config.cron.schedule}"`);
+
+  cron.schedule(config.cron.schedule, async () => {
+    console.log(`[${new Date().toISOString()}] 🔄 Ejecutando búsqueda de ofertas...`);
+    try {
+      const result = await fetchAndMarkDeals();
+
+      if (result.status === 'ai_error') {
+        // No enviar broadcast — un mensaje "no hay ofertas" sería engañoso.
+        console.error(`❌ Cron: broadcast omitido por fallo de IA. Razón: ${result.reason}`);
+        return;
+      }
+
+      if (result.status === 'no_deals' || result.deals.length === 0) {
+        // Sin ofertas que superen los filtros hoy — silencio correcto, no es un error.
+        console.log('📭 Cron: sin ofertas destacadas hoy. No se envía broadcast.');
+        return;
+      }
+
+      const copRate = await getExchangeRate();
+      const message = formatDealsMessage(result.deals, copRate);
+      await notifyAllUsers(message);
+      console.log(`✅ Broadcast enviado: ${result.deals.length} ofertas.`);
+    } catch (err) {
+      const msg = (err as Error).message ?? 'sin mensaje';
+      console.error(`❌ Error inesperado en cron: ${msg}`);
+    }
+  }, { timezone: 'America/Bogota' });
+}
+```
+
+<Note>
+  The timezone is hardcoded to `'America/Bogota'` in the `cron.schedule` options, independent of the server's local timezone. This ensures the broadcast fires at the correct local time regardless of where the host machine is running.
+</Note>
