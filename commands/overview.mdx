@@ -57,7 +57,7 @@ Fetches and displays the current day's curated deals on demand.
 
 **Example formatted message:**
 
-Deals are rendered as an HTML message with the following structure per entry:
+Deals are rendered as an HTML message with the following structure per entry. Prices are shown in Colombian pesos (COP) with the original price struck through, followed by the USD sale price in parentheses:
 
 ```
 🎮 Ofertas Steam Destacadas
@@ -65,9 +65,9 @@ Deals are rendered as an HTML message with the following structure per entry:
 5 juegos seleccionados por IA
 
 1. Hollow Knight
-💰 ~~COP $37.400~~ → COP $9.350 (USD $2.24) (75% OFF)
+💰 COP $59.000 → COP $14.750 (USD $3.53) (75% OFF)
 📊 Metacritic: 87
-💡 Critically acclaimed Metroidvania with 40+ hours of content.
+💡 Metroidvania aclamado por la crítica con 40+ horas de contenido.
 🛒 Ver oferta en Steam
 
 ────────────────────
@@ -83,7 +83,7 @@ The exact HTML sent to Telegram:
 💰 <s>COP $37.400</s> → <b>COP $9.350</b> (USD $2.24) (75% OFF)
 📊 Metacritic: <b>87</b>
 💡 <i>Critically acclaimed Metroidvania with 40+ hours of content.</i>
-<a href="https://store.steampowered.com/app/367520">🛒 Ver oferta en Steam</a>
+<a href="https://www.cheapshark.com/redirect?dealID=abc123">🛒 Ver oferta en Steam</a>
 ```
 
 ---

@@ -127,8 +127,8 @@ See [Caching and deduplication](/concepts/caching).
       <Step title="Reconstruct and persist">
         `buildFilteredDeals()` assembles `FilteredDeal[]` from the original CheapShark data using GPT's selected IDs. The snapshot is saved to disk.
       </Step>
-      <Step title="Broadcast and mark">
-        The Notifier Service sends each deal to all subscribers. `markAsNotified()` records the game IDs to prevent future re-broadcasts.
+      <Step title="Format and broadcast">
+        `getExchangeRate()` fetches the current USD → COP rate (12-hour in-memory cache, falls back to 4,000 COP/USD). `formatDealsMessage()` renders each deal in HTML with COP and USD prices. The Notifier Service broadcasts the message to all subscribers. `markAsNotified()` records the game IDs to prevent future re-broadcasts.
       </Step>
     </Steps>
   </Tab>
@@ -144,7 +144,7 @@ See [Caching and deduplication](/concepts/caching).
         If there is no fresh snapshot, the full pipeline runs (same steps 3–7 as the cron path), but **without** calling `markAsNotified()`. The user gets results without affecting the deduplication log.
       </Step>
       <Step title="Response sent">
-        The bot formats the `FilteredDeal[]` and sends it to the requesting chat.
+        The bot calls `getExchangeRate()` to get the current USD → COP rate (cached for 12 hours), formats the `FilteredDeal[]` with both COP and USD prices, and sends the HTML message to the requesting chat.
       </Step>
     </Steps>
   </Tab>

@@ -1,0 +1,194 @@
+---
+title: "Message formatter"
+description: "Formats the curated deals list as an HTML message for Telegram, showing prices in both COP and USD."
+---
+
+## Overview
+
+`src/utils/formatMessage.ts` converts a `FilteredDeal[]` array into a single HTML-formatted string ready to be sent via the Telegram Bot API using `parse_mode: 'HTML'`.
+
+Each deal entry shows the game title, price in Colombian pesos (COP) with the original price struck through, the USD price for reference, the discount percentage, a quality score, and a CheapShark redirect link for purchasing.
+
+## Exported function
+
+### `formatDealsMessage`
+
+```typescript
+export function formatDealsMessage(deals: FilteredDeal[], copRate: number): string
+```
+
+<ParamField path="deals" type="FilteredDeal[]" required>
+  The curated list of deals to format. If the array is empty, the function returns a single "no deals today" message string.
+</ParamField>
+
+<ParamField path="copRate" type="number" required>
+  The current USD → COP exchange rate. Obtained from `getExchangeRate()` immediately before calling this function. Used to convert USD prices to Colombian pesos for display.
+</ParamField>
+
+**Returns:** An HTML string suitable for `parse_mode: 'HTML'` in the Telegram Bot API.
+
+## Output format
+
+### Empty deals
+
+If `deals.length === 0`, the function returns:
+
+```
+🎮 No hay ofertas destacadas hoy. ¡Vuelve mañana!
+```
+
+### Non-empty deals
+
+The message has a header, a count subtitle, and one section per deal separated by a horizontal rule:
+
+```
+🎮 Ofertas Steam Destacadas
+📅 miércoles, 18 de marzo
+5 juegos seleccionados por IA
+
+1. Hollow Knight
+💰 COP $37.400 → COP $9.350 (USD $2.24) (75% OFF)
+📊 Metacritic: 87
+💡 Critically acclaimed Metroidvania con 40+ horas de contenido.
+🛒 Ver oferta en Steam
+
+────────────────────
+
+2. ...
+```
+
+### Price display
+
+Each deal shows both COP and USD prices:
+
+- **Normal price (struck through):** `COP $37.400` — the original price converted to COP
+- **Sale price (bold):** `COP $9.350` — the discounted price converted to COP  
+- **USD price:** `(USD $2.24)` — the sale price in USD, formatted with two decimal places
+
+```typescript
+const normalPriceCOP = formatCopPrice(deal.normalPrice, copRate);
+const salePriceCOP = formatCopPrice(deal.salePrice, copRate);
+const salePriceUSD = formatUsdPrice(deal.salePrice);
+```
+
+COP prices are rounded to the nearest integer and formatted with the `es-CO` locale (period as thousands separator). USD prices use `en-US` locale with two decimal places.
+
+### Quality score display
+
+The score line adapts based on whether a Metacritic score is available:
+
+```typescript
+const score = deal.metacriticScore > 0
+  ? `📊 Metacritic: <b>${deal.metacriticScore}</b>`
+  : `⭐ ${escapeHtml(deal.steamRatingText)}`;
+```
+
+- If `metacriticScore > 0`: displays `📊 Metacritic: 87`
+- Otherwise: displays `⭐ Very Positive` (or whatever `steamRatingText` is)
+
+### HTML structure per deal
+
+```html
+<b>1. Hollow Knight</b>
+💰 <s>COP $37.400</s> → <b>COP $9.350</b> (USD $2.24) (75% OFF)
+📊 Metacritic: <b>87</b>
+💡 <i>Critically acclaimed Metroidvania con 40+ horas de contenido.</i>
+<a href="https://www.cheapshark.com/redirect?dealID=abc123">🛒 Ver oferta en Steam</a>
+```
+
+## HTML escaping
+
+The function escapes `&`, `<`, and `>` in all user-provided text fields (game title and AI reason) to prevent HTML injection:
+
+```typescript
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+```
+
+<Note>
+  HTML mode is used instead of Telegram's Markdown mode because game titles and AI-generated reasons can contain characters like `_`, `*`, `[`, and `(` that would silently break Markdown rendering.
+</Note>
+
+## Timezone
+
+The date shown in the header is formatted in the `America/Bogota` timezone using the `es-CO` locale, consistent with the cron schedule and snapshot freshness checks:
+
+```typescript
+const date = new Date().toLocaleDateString('es-CO', {
+  timeZone: 'America/Bogota',
+  weekday: 'long',
+  day: 'numeric',
+  month: 'long',
+});
+```
+
+## Full source
+
+```typescript src/utils/formatMessage.ts
+import { FilteredDeal } from '../types';
+
+const copFormatter = new Intl.NumberFormat('es-CO', {
+  maximumFractionDigits: 0,
+});
+
+const usdFormatter = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function formatCopPrice(usdPrice: string, copRate: number): string {
+  const value = Math.round(parseFloat(usdPrice) * copRate);
+  return `COP $${copFormatter.format(value)}`;
+}
+
+function formatUsdPrice(usdPrice: string): string {
+  return `USD $${usdFormatter.format(parseFloat(usdPrice))}`;
+}
+
+export function formatDealsMessage(deals: FilteredDeal[], copRate: number): string {
+  if (deals.length === 0) {
+    return '🎮 No hay ofertas destacadas hoy. ¡Vuelve mañana!';
+  }
+
+  const date = new Date().toLocaleDateString('es-CO', {
+    timeZone: 'America/Bogota',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  });
+
+  const header = `🎮 <b>Ofertas Steam Destacadas</b>\n📅 ${date}\n`;
+  const subtitle = `<i>${deals.length} juegos seleccionados por IA</i>\n\n`;
+
+  const items = deals.map((deal, i) => {
+    const score = deal.metacriticScore > 0
+      ? `📊 Metacritic: <b>${deal.metacriticScore}</b>`
+      : `⭐ ${escapeHtml(deal.steamRatingText)}`;
+
+    const normalPriceCOP = formatCopPrice(deal.normalPrice, copRate);
+    const salePriceCOP = formatCopPrice(deal.salePrice, copRate);
+    const salePriceUSD = formatUsdPrice(deal.salePrice);
+
+    return [
+      `<b>${i + 1}. ${escapeHtml(deal.title)}</b>`,
+      `💰 <s>${normalPriceCOP}</s> → <b>${salePriceCOP}</b> (${salePriceUSD}) (${deal.savingsPercent}% OFF)`,
+      score,
+      `💡 <i>${escapeHtml(deal.reason)}</i>`,
+      `<a href="${deal.dealUrl}">🛒 Ver oferta en Steam</a>`,
+    ].join('\n');
+  });
+
+  return header + subtitle + items.join(`\n\n${'─'.repeat(20)}\n\n`);
+}
+```

@@ -1,0 +1,67 @@
+---
+title: "Exchange Rate API"
+description: "Free API used to fetch the current USD to COP exchange rate for displaying deal prices in Colombian pesos."
+---
+
+## Overview
+
+The bot uses the [Open Exchange Rates](https://open.er-api.com) free tier to convert deal prices from USD to Colombian pesos (COP). This allows subscribers to see deal prices in their local currency alongside the USD reference price.
+
+**Base URL:** `https://open.er-api.com/v6/latest/USD`
+
+**Authentication:** None required
+
+**Timeout:** 10 seconds
+
+**Cache:** 12-hour in-memory cache (per process)
+
+---
+
+## Endpoint: GET /v6/latest/USD
+
+Returns the latest exchange rates relative to USD.
+
+```
+GET https://open.er-api.com/v6/latest/USD
+```
+
+### Response fields used
+
+<ResponseField name="rates.COP" type="number">
+  The current Colombian peso (COP) exchange rate relative to 1 USD. For example, `4200` means 1 USD = 4,200 COP.
+
+  The bot validates that this value is a finite positive number before accepting it. Invalid or missing values trigger the fallback rate.
+</ResponseField>
+
+### Sample response (abbreviated)
+
+```json
+{
+  "result": "success",
+  "base_code": "USD",
+  "rates": {
+    "COP": 4198.50,
+    "EUR": 0.92,
+    "GBP": 0.79
+  }
+}
+```
+
+---
+
+## Fallback behavior
+
+If the API call fails or returns an invalid rate, the bot falls back gracefully:
+
+1. **Cached rate available** — returns the last successfully fetched rate, even if stale.
+2. **No cached rate** — returns the hardcoded fallback of **4,000 COP/USD**.
+
+<Note>
+  The fallback ensures the bot continues to operate and display prices even during API outages. The displayed COP price may be slightly inaccurate if the fallback is used, but deal delivery is never blocked.
+</Note>
+
+---
+
+## Implementation reference
+
+See [Currency service](/reference/currency-service) for the full implementation details, including cache TTL, validation logic, and the complete source code.

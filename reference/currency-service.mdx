@@ -1,0 +1,125 @@
+---
+title: "Currency service"
+description: "Fetches the live USD to COP exchange rate used to display deal prices in Colombian pesos."
+---
+
+## Overview
+
+`src/services/currencyService.ts` retrieves the current USD → COP (Colombian peso) exchange rate from the [Open Exchange Rates API](https://open.er-api.com) and applies a 12-hour in-memory cache to avoid redundant network calls.
+
+The rate is used by both the daily cron broadcast and the `/deals` command to display prices in COP alongside the USD price.
+
+## Exported function
+
+### `getExchangeRate`
+
+```typescript
+export async function getExchangeRate(): Promise<number>
+```
+
+Returns the current USD → COP exchange rate as a `number`.
+
+- If a cached rate exists and was fetched within the last 12 hours, it is returned immediately without hitting the network.
+- If the API call fails for any reason (network error, unexpected response shape, rate out of range), the function returns the last known cached rate if available, or the hardcoded fallback of **4,000 COP/USD**.
+
+<Note>
+  The exchange rate is never a required dependency for deal delivery. If the API is unavailable, the fallback rate ensures the bot keeps running and prices are still shown — just with a potentially stale rate.
+</Note>
+
+## Cache behavior
+
+The in-memory cache is module-level:
+
+```typescript
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const FALLBACK_COP_RATE = 4000;
+
+let cachedRate: number | null = null;
+let cachedAt = 0;
+```
+
+| Condition | Behavior |
+|---|---|
+| Cache is empty and API succeeds | Fetches rate, caches it, returns it |
+| Cache is fresh (< 12 hours old) | Returns cached rate immediately |
+| Cache is stale and API succeeds | Refreshes cache and returns new rate |
+| Cache is stale and API fails | Returns `cachedRate` if set, else fallback `4000` |
+| Cache is empty and API fails | Returns fallback `4000` |
+
+The cache resets when the process restarts.
+
+## Fallback rate
+
+The hardcoded fallback is `4000` COP per USD:
+
+```typescript
+const FALLBACK_COP_RATE = 4000;
+```
+
+This is a conservative estimate that prevents division-by-zero and ensures price display never fails. The actual rate at time of writing is higher; the fallback is intentionally conservative.
+
+## External API
+
+The function calls the Open Exchange Rates API:
+
+```
+GET https://open.er-api.com/v6/latest/USD
+```
+
+**Authentication:** None required (free tier)  
+**Timeout:** 10 seconds
+
+The response shape used:
+
+```typescript
+interface ExchangeRateResponse {
+  rates?: {
+    COP?: unknown;
+  };
+}
+```
+
+The `COP` field is validated to be a finite positive number before it is accepted. Any other value triggers the fallback path.
+
+## Full source
+
+```typescript src/services/currencyService.ts
+import axios from 'axios';
+
+const EXCHANGE_RATE_URL = 'https://open.er-api.com/v6/latest/USD';
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const FALLBACK_COP_RATE = 4000;
+
+let cachedRate: number | null = null;
+let cachedAt = 0;
+
+interface ExchangeRateResponse {
+  rates?: {
+    COP?: unknown;
+  };
+}
+
+export async function getExchangeRate(): Promise<number> {
+  const now = Date.now();
+  if (cachedRate !== null && now - cachedAt < CACHE_TTL_MS) {
+    return cachedRate;
+  }
+
+  try {
+    const { data } = await axios.get<ExchangeRateResponse>(EXCHANGE_RATE_URL, {
+      timeout: 10_000,
+    });
+    const rate = data?.rates?.COP;
+
+    if (typeof rate === 'number' && Number.isFinite(rate) && rate > 0) {
+      cachedRate = rate;
+      cachedAt = now;
+      return rate;
+    }
+  } catch {
+    // Si falla la API externa, el bot sigue operando con una tasa segura.
+  }
+
+  return cachedRate ?? FALLBACK_COP_RATE;
+}
+```

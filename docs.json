@@ -71,7 +71,9 @@
               "reference/openai-filter",
               "reference/notifier",
               "reference/scheduler",
-              "reference/cache"
+              "reference/cache",
+              "reference/currency-service",
+              "reference/format-message"
             ]
           },
           {
@@ -79,7 +81,8 @@
             "pages": [
               "reference/cheapshark-api",
               "reference/telegram-api",
-              "reference/openai-api"
+              "reference/openai-api",
+              "reference/exchange-rate-api"
             ]
           },
           {
